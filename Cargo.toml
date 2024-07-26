@@ -11,6 +11,7 @@ futures = "0.3.30"
 futures-util = "0.3.30"
 parking_lot = "0.12.3"
 rand = "0.8.5"
+subxt-core = "0.37.0"
 thiserror = "1.0.63"
 time = { version = "0.3.36", features = ["formatting", "local-offset", "macros"] }
 tokio = { version = "1.39.1", features = ["macros", "time", "rt-multi-thread", "sync"] }

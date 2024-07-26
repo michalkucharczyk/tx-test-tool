@@ -1,7 +1,6 @@
 use super::*;
 
-pub type FakeHash = u32;
-impl Hash for FakeHash {}
+pub type FakeHash = [u8; 4];
 
 #[derive(Clone)]
 pub struct EventDef {
@@ -22,15 +21,15 @@ impl EventDef {
             delay,
         }
     }
-    pub fn in_block(h: FakeHash, delay: u32) -> Self {
+    pub fn in_block(h: u32, delay: u32) -> Self {
         Self {
-            event: TransactionStatus::InBlock(h),
+            event: TransactionStatus::InBlock(h.to_le_bytes()),
             delay,
         }
     }
-    pub fn finalized(h: FakeHash, delay: u32) -> Self {
+    pub fn finalized(h: u32, delay: u32) -> Self {
         Self {
-            event: TransactionStatus::Finalized(h),
+            event: TransactionStatus::Finalized(h.to_le_bytes()),
             delay,
         }
     }
@@ -68,36 +67,43 @@ pub struct FakeTransaction {
     stream_def: EventsStreamDef,
 }
 
-impl Transaction<FakeHash> for FakeTransaction {
-    fn hash(&self) -> FakeHash {
+impl Transaction for FakeTransaction {
+    type HashType = FakeHash;
+    fn hash(&self) -> Self::HashType {
         self.hash
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
 impl FakeTransaction {
-    pub fn new(hash: FakeHash, stream_def: EventsStreamDef) -> Self {
-        Self { stream_def, hash }
+    pub fn new(hash: u32, stream_def: EventsStreamDef) -> Self {
+        Self {
+            stream_def,
+            hash: hash.to_le_bytes(),
+        }
     }
 
-    pub fn new_droppable(hash: FakeHash, delay: u32) -> Self {
+    pub fn new_droppable(hash: u32, delay: u32) -> Self {
         Self::new(hash, EventsStreamDef(vec![EventDef::dropped(delay)]))
     }
 
-    pub fn new_invalid(hash: FakeHash, delay: u32) -> Self {
+    pub fn new_invalid(hash: u32, delay: u32) -> Self {
         Self::new(hash, EventsStreamDef(vec![EventDef::invalid(delay)]))
     }
 
-    pub fn new_error(hash: FakeHash, delay: u32) -> Self {
+    pub fn new_error(hash: u32, delay: u32) -> Self {
         Self::new(hash, EventsStreamDef(vec![EventDef::error(delay)]))
     }
 
-    pub fn new_finalizable_quick(hash: FakeHash) -> Self {
+    pub fn new_finalizable_quick(hash: u32) -> Self {
         Self::new(
             hash,
             EventsStreamDef(vec![
                 EventDef::broadcasted(10),
                 EventDef::validated(10),
-                EventDef::in_block(1u32, 10),
+                EventDef::in_block(1, 10),
                 EventDef::in_block(2, 10),
                 EventDef::in_block(3, 10),
                 EventDef::finalized(2, 10),
@@ -105,13 +111,13 @@ impl FakeTransaction {
         )
     }
 
-    pub fn new_finalizable(hash: FakeHash) -> Self {
+    pub fn new_finalizable(hash: u32) -> Self {
         Self::new(
             hash,
             EventsStreamDef(vec![
                 EventDef::broadcasted(100),
                 EventDef::validated(300),
-                EventDef::in_block(1u32, 1000),
+                EventDef::in_block(1, 1000),
                 EventDef::in_block(2, 1000),
                 EventDef::in_block(3, 1000),
                 EventDef::finalized(2, 2000),
@@ -172,7 +178,7 @@ mod test {
             EventsStreamDef(vec![
                 EventDef::broadcasted(100),
                 EventDef::validated(300),
-                EventDef::in_block(1u32, 1000),
+                EventDef::in_block(1, 1000),
                 EventDef::in_block(2, 1000),
                 EventDef::in_block(3, 1000),
                 EventDef::finalized(2, 2000),
@@ -184,10 +190,10 @@ mod test {
             vec![
                 TransactionStatus::Broadcasted,
                 TransactionStatus::Validated,
-                TransactionStatus::InBlock(1u32),
-                TransactionStatus::InBlock(2),
-                TransactionStatus::InBlock(3),
-                TransactionStatus::Finalized(2)
+                TransactionStatus::InBlock(1u32.to_le_bytes()),
+                TransactionStatus::InBlock(2u32.to_le_bytes()),
+                TransactionStatus::InBlock(3u32.to_le_bytes()),
+                TransactionStatus::Finalized(2u32.to_le_bytes())
             ]
         );
         info!("{v:?}")

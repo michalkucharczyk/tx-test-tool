@@ -4,11 +4,13 @@ use futures_util::{stream::FuturesUnordered, StreamExt};
 use parking_lot::RwLock;
 use rand::Rng;
 use std::{
+    any::Any,
     collections::HashSet,
     pin::Pin,
     sync::Arc,
     time::{Duration, Instant},
 };
+use subxt_core::config::BlockHash;
 use tokio::select;
 use tracing::info;
 use tracing_subscriber;
@@ -24,7 +26,7 @@ mod runner;
 use fake_transaction::FakeTransaction;
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum TransactionStatus<H> {
+pub enum TransactionStatus<H: BlockHash> {
     Validated,
     Broadcasted,
     InBlock(H),
@@ -44,52 +46,55 @@ pub enum Error {
     Other(String),
 }
 
-impl<H: Hash> TransactionStatusIsTerminal for TransactionStatus<H> {
+impl<H: BlockHash> TransactionStatusIsTerminal for TransactionStatus<H> {
     fn is_terminal(&self) -> bool {
         matches!(self, Self::Finalized(_) | Self::Dropped | Self::Invalid)
     }
 }
 
-pub enum ResbumitReason {
-    Error,
-}
+// pub enum ResbumitReason {
+//     Error,
+// }
 
-pub enum TransactiondStoreStatus {
-    Ready,
-    InProgress,
-    Done,
-}
+// pub enum TransactiondStoreStatus {
+//     Ready,
+//     InProgress,
+//     Done,
+// }
 
-pub trait Hash: Send + Sync {}
-
-pub trait Transaction<H: Hash>: Sync + Send {
-    fn hash(&self) -> H;
+pub trait Transaction: Sync {
+    type HashType: BlockHash;
+    fn hash(&self) -> Self::HashType;
+    fn as_any(&self) -> &dyn Any;
 }
 
 type StreamOf<I> = Pin<Box<dyn futures::Stream<Item = I> + Send>>;
 
 /// Abstraction for RPC client
 #[async_trait]
-pub trait TransactionsSink<H: Hash, T: Transaction<H>>: Sync {
+pub trait TransactionsSink<H: BlockHash>: Sync {
     async fn submit_and_watch(
         &self,
-        tx: T,
+        tx: &dyn Transaction<HashType = H>,
     ) -> Result<StreamOf<TransactionStatus<H>>, Box<dyn std::error::Error>>;
-    async fn submit(&self, tx: T) -> Result<H, Box<dyn std::error::Error>>;
+    async fn submit(
+        &self,
+        tx: &dyn Transaction<HashType = H>,
+    ) -> Result<H, Box<dyn std::error::Error>>;
 
     ///Current count of transactions being processed by sink
     fn count(&self) -> usize;
 }
 
-pub trait TransactionsStore<H: Hash, T: Transaction<H>>: Sync {
-    fn ready(&self) -> impl IntoIterator<Item = T>;
-}
+// pub trait TransactionsStore<H: BlockHash, T: Transaction<H>>: Sync {
+//     fn ready(&self) -> impl IntoIterator<Item = >;
+// }
 
-#[async_trait]
-pub trait ResubmitQueue<H: Hash, T: Transaction<H>>: Sync {
-    async fn resubmit(tx: T, reason: ResbumitReason);
-    fn stream_of_resubmits(&self) -> StreamOf<T>;
-}
+// #[async_trait]
+// pub trait ResubmitQueue<H: Hash, T: Transaction<H>>: Sync {
+//     async fn resubmit(tx: T, reason: ResbumitReason);
+//     fn stream_of_resubmits(&self) -> StreamOf<T>;
+// }
 
 ////////////////////////////////////////////////////////////////////////////////
 

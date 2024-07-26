@@ -48,11 +48,11 @@ pub async fn run_poc() {
     }
 }
 
-struct Runner<H: Hash, T: Transaction<H>> {
-    _data: PhantomData<(H, T)>,
+struct Runner<H: BlockHash> {
+    _data: PhantomData<H>,
 }
 
-impl<H: Hash, T: Transaction<H>> Runner<H, T> {
+impl<H: BlockHash> Runner<H> {
     fn new() -> Self {
         Self {
             _data: Default::default(),
@@ -60,10 +60,14 @@ impl<H: Hash, T: Transaction<H>> Runner<H, T> {
     }
 }
 
-impl<H: Hash, T: Transaction<H>> Runner<H, T> {
-    pub async fn send_txs(&self, tx: T, rpc: &dyn TransactionsSink<H, T>) -> Result<H, ()> {
+impl<H: BlockHash> Runner<H> {
+    pub async fn send_txs(
+        &self,
+        tx: Box<dyn Transaction<HashType = H>>,
+        rpc: &dyn TransactionsSink<H>,
+    ) -> Result<H, ()> {
         let hash = tx.hash();
-        let result = rpc.submit_and_watch(tx).await;
+        let result = rpc.submit_and_watch(&*tx).await;
         match result {
             Ok(mut stream) => {
                 while let Some(status) = stream.next().await {
@@ -82,11 +86,12 @@ impl<H: Hash, T: Transaction<H>> Runner<H, T> {
 }
 
 pub async fn run_poc2() {
-    let runner = Runner::<FakeHash, FakeTransaction>::new();
+    let runner = Runner::<FakeHash>::new();
     let rpc = FakeTransactionSink::new();
 
-    let mut transactions = (0..100_000)
+    let mut transactions = (0..10_000)
         .map(FakeTransaction::new_finalizable_quick)
+        .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
         .collect::<Vec<_>>();
 
     let mut workers = FuturesUnordered::new();
