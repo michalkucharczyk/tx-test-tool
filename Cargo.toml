@@ -1,0 +1,16 @@
+[package]
+name = "threading-model"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+futures = "0.3.30"
+futures-util = "0.3.30"
+parking_lot = "0.12.3"
+rand = "0.8.5"
+time = { version = "0.3.36", features = ["formatting", "local-offset", "macros"] }
+tokio = { version = "1.39.1", features = ["macros", "time", "rt-multi-thread", "sync"] }
+tracing = "0.1.40"
+tracing-subscriber = {version = "0.3.18", features = ["time","fmt"] }
