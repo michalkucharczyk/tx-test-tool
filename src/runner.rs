@@ -10,29 +10,29 @@ enum ExecutionEvent<H: BlockHash> {
     Popped(Instant),
     Sent(Instant),
     Resubmitted(Instant),
-    SubmitResult(Instant, Result<(), String>),
-    SubmitAndWatchResult(Instant, Result<(), String>),
+    SubmitResult(Instant, Result<(), Error>),
+    SubmitAndWatchResult(Instant, Result<(), Error>),
     TxPoolEvent(Instant, TransactionStatus<H>),
 }
 
 impl<H: BlockHash> ExecutionEvent<H> {
-    fn popped(t: Instant) -> Self {
-        Self::Popped(t)
+    fn popped() -> Self {
+        Self::Popped(Instant::now())
     }
-    fn sent(t: Instant) -> Self {
-        Self::Sent(t)
+    fn sent() -> Self {
+        Self::Sent(Instant::now())
     }
-    fn submit_and_watch_result(t: Instant, r: Result<(), String>) -> Self {
-        Self::SubmitAndWatchResult(t, r)
+    fn submit_and_watch_result(r: Result<(), Error>) -> Self {
+        Self::SubmitAndWatchResult(Instant::now(), r)
     }
-    fn submit_result(t: Instant, r: Result<(), String>) -> Self {
-        Self::SubmitResult(t, r)
+    fn submit_result(r: Result<(), Error>) -> Self {
+        Self::SubmitResult(Instant::now(), r)
     }
 }
 
-impl<H: BlockHash> From<(Instant, TransactionStatus<H>)> for ExecutionEvent<H> {
-    fn from(value: (Instant, TransactionStatus<H>)) -> Self {
-        Self::TxPoolEvent(value.0, value.1)
+impl<H: BlockHash> From<TransactionStatus<H>> for ExecutionEvent<H> {
+    fn from(value: TransactionStatus<H>) -> Self {
+        Self::TxPoolEvent(Instant::now(), value)
     }
 }
 
@@ -135,23 +135,18 @@ enum ExecutionResult {
 trait TxTask {
     type HashType: BlockHash;
     fn tx(&self) -> &dyn Transaction<HashType = Self::HashType>;
+    fn is_watched(&self) -> bool;
 
-    async fn send_tx(
+    async fn send_watched_tx(
         self: Box<Self>,
         log: &dyn ExecutionLog<HashType = Self::HashType>,
         rpc: &dyn TransactionsSink<Self::HashType>,
     ) -> ExecutionResult {
-        log.push_event(ExecutionEvent::popped(Instant::now()));
-        let submission = rpc.submit_and_watch(self.tx());
-        log.push_event(ExecutionEvent::sent(Instant::now()));
-        let result = submission.await;
-        match result {
+        log.push_event(ExecutionEvent::sent());
+        match rpc.submit_and_watch(self.tx()).await {
             Ok(mut stream) => {
+                log.push_event(ExecutionEvent::submit_and_watch_result(Ok(())));
                 let mut result = None;
-                log.push_event(ExecutionEvent::submit_and_watch_result(
-                    Instant::now(),
-                    Ok(()),
-                ));
                 while let Some(status) = stream.next().await {
                     result = if status.is_finalized() {
                         Some(ExecutionResult::Done)
@@ -160,17 +155,34 @@ trait TxTask {
                     } else {
                         None
                     };
-                    log.push_event((Instant::now(), status).into())
+                    log.push_event(status.into());
                 }
                 result.expect("stream shall terminated with error or finalized. qed.")
             }
             Err(e) => {
-                log.push_event(ExecutionEvent::submit_and_watch_result(
-                    Instant::now(),
-                    Err(e.to_string()),
-                ));
+                log.push_event(ExecutionEvent::submit_and_watch_result(Err(e)));
                 ExecutionResult::NeedsResubmit
             }
+        }
+    }
+
+    async fn send_tx(
+        self: Box<Self>,
+        log: &dyn ExecutionLog<HashType = Self::HashType>,
+        rpc: &dyn TransactionsSink<Self::HashType>,
+    ) -> ExecutionResult {
+        todo!()
+    }
+
+    async fn execute(
+        self: Box<Self>,
+        log: &dyn ExecutionLog<HashType = Self::HashType>,
+        rpc: &dyn TransactionsSink<Self::HashType>,
+    ) -> ExecutionResult {
+        if self.is_watched() {
+            self.send_watched_tx(log, rpc).await
+        } else {
+            self.send_tx(log, rpc).await
         }
     }
 }
@@ -195,6 +207,10 @@ impl TxTask for FakeTxTask {
     type HashType = FakeHash;
     fn tx(&self) -> &dyn Transaction<HashType = FakeHash> {
         &self.tx
+    }
+
+    fn is_watched(&self) -> bool {
+        true
     }
 }
 
@@ -231,7 +247,8 @@ impl Runner {
         for _ in 0..5000 {
             let t = Box::new(self.transactions.pop().unwrap());
             let log = &self.logs[&t.tx().hash()];
-            workers.push(t.send_tx(log, &self.rpc));
+            log.push_event(ExecutionEvent::popped());
+            workers.push(t.execute(log, &self.rpc));
             i = i + 1;
         }
 
@@ -243,9 +260,9 @@ impl Runner {
                         Some(tx_hash) => {
                             if let Some(task) = self.transactions.pop() {
                                 let task = Box::from(task);
-                                // let elapsed = started.elapsed();
                                 let log = &self.logs[&task.tx().hash()];
-                                workers.push(task.send_tx(log, &self.rpc));
+                                log.push_event(ExecutionEvent::popped());
+                                workers.push(task.execute(log, &self.rpc));
                             }
                             info!(?tx_hash, workers_len=workers.len(), "FINISHED");
                         }

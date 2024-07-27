@@ -18,7 +18,7 @@ impl TransactionsSink<FakeHash> for FakeTransactionSink {
     async fn submit_and_watch(
         &self,
         tx: &dyn Transaction<HashType = FakeHash>,
-    ) -> Result<StreamOf<TransactionStatus<FakeHash>>, Box<dyn std::error::Error + Send>> {
+    ) -> Result<StreamOf<TransactionStatus<FakeHash>>, Error> {
         let hash = tx.hash();
         self.txs.write().insert(tx.hash());
         let txs = self.txs.clone();
@@ -34,10 +34,7 @@ impl TransactionsSink<FakeHash> for FakeTransactionSink {
             .boxed())
     }
 
-    async fn submit(
-        &self,
-        tx: &dyn Transaction<HashType = FakeHash>,
-    ) -> Result<FakeHash, Box<dyn std::error::Error + Send>> {
+    async fn submit(&self, tx: &dyn Transaction<HashType = FakeHash>) -> Result<FakeHash, Error> {
         self.txs.write().insert(tx.hash());
         let tx = tx.as_any().downcast_ref::<FakeTransaction>().unwrap();
         let result = tx.submit_result().await;
@@ -89,8 +86,7 @@ mod test {
         let t = FakeTransaction::new_droppable(1, 10);
         let t: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t);
         let r = rpc.submit(&*t).await.unwrap_err();
-        let r = r.downcast_ref::<Error>().unwrap();
-        assert_eq!(r, &Error::Other("submit-error:dropped".to_string()));
+        assert_eq!(r, Error::Other("submit-error:dropped:xxx".to_string()));
     }
 
     #[tokio::test]
@@ -99,8 +95,7 @@ mod test {
         let t = FakeTransaction::new_invalid(1, 10);
         let t: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t);
         let r = rpc.submit(&*t).await.unwrap_err();
-        let r = r.downcast_ref::<Error>().unwrap();
-        assert_eq!(r, &Error::Other("submit-error:invalid".to_string()));
+        assert_eq!(r, Error::Other("submit-error:invalid:xxx".to_string()));
     }
 
     #[tokio::test]
@@ -109,8 +104,7 @@ mod test {
         let t = FakeTransaction::new_error(1, 10);
         let t: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t);
         let r = rpc.submit(&*t).await.unwrap_err();
-        let r = r.downcast_ref::<Error>().unwrap();
-        assert_eq!(r, &Error::Other("submit-error:error".to_string()));
+        assert_eq!(r, Error::Other("submit-error:error:xxx".to_string()));
     }
 
     #[tokio::test]

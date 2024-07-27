@@ -140,7 +140,7 @@ impl FakeTransaction {
         .boxed()
     }
 
-    pub async fn submit_result(&self) -> Result<FakeHash, Box<dyn std::error::Error + Send>> {
+    pub async fn submit_result(&self) -> Result<FakeHash, Error> {
         let EventDef { event, delay } = self
             .stream_def
             .clone()
@@ -151,15 +151,15 @@ impl FakeTransaction {
         info!("submit_result: delayed: {:?}", self.hash);
         match event {
             TransactionStatus::Finalized(_) => Ok(self.hash),
-            TransactionStatus::Dropped(message) => Err(Box::new(Error::Other(
+            TransactionStatus::Dropped(message) => Err(Error::Other(
                 format!("submit-error:dropped:{message}").to_string(),
-            ))),
-            TransactionStatus::Invalid(message) => Err(Box::new(Error::Other(
+            )),
+            TransactionStatus::Invalid(message) => Err(Error::Other(
                 format!("submit-error:invalid:{message}").to_string(),
-            ))),
-            TransactionStatus::Error(message) => Err(Box::new(Error::Other(
+            )),
+            TransactionStatus::Error(message) => Err(Error::Other(
                 format!("submit-error:error:{message}").to_string(),
-            ))),
+            )),
             TransactionStatus::Validated
             | TransactionStatus::NoLongerInBestBlock
             | TransactionStatus::Broadcasted(_)
