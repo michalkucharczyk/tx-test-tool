@@ -73,7 +73,7 @@ mod test {
         assert_eq!(
             v,
             vec![
-                TransactionStatus::Broadcasted,
+                TransactionStatus::Broadcasted(3),
                 TransactionStatus::Validated,
                 TransactionStatus::InBlock(1u32.to_le_bytes()),
                 TransactionStatus::InBlock(2u32.to_le_bytes()),

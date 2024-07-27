@@ -15,9 +15,10 @@ impl EventDef {
             delay,
         }
     }
-    pub fn broadcasted(delay: u32) -> Self {
+    pub fn broadcasted(delay: u32, num: u32) -> Self {
         Self {
-            event: TransactionStatus::Broadcasted,
+            //todo
+            event: TransactionStatus::Broadcasted(num),
             delay,
         }
     }
@@ -35,19 +36,19 @@ impl EventDef {
     }
     pub fn dropped(delay: u32) -> Self {
         Self {
-            event: TransactionStatus::Dropped,
+            event: TransactionStatus::Dropped("xxx".to_string()),
             delay,
         }
     }
     pub fn invalid(delay: u32) -> Self {
         Self {
-            event: TransactionStatus::Invalid,
+            event: TransactionStatus::Invalid("xxx".to_string()),
             delay,
         }
     }
     pub fn error(delay: u32) -> Self {
         Self {
-            event: TransactionStatus::Error,
+            event: TransactionStatus::Error("xxx".to_string()),
             delay,
         }
     }
@@ -101,7 +102,7 @@ impl FakeTransaction {
         Self::new(
             hash,
             EventsStreamDef(vec![
-                EventDef::broadcasted(10),
+                EventDef::broadcasted(10, 3),
                 EventDef::validated(10),
                 EventDef::in_block(1, 10),
                 EventDef::in_block(2, 10),
@@ -115,7 +116,7 @@ impl FakeTransaction {
         Self::new(
             hash,
             EventsStreamDef(vec![
-                EventDef::broadcasted(100),
+                EventDef::broadcasted(100, 3),
                 EventDef::validated(300),
                 EventDef::in_block(1, 1000),
                 EventDef::in_block(2, 1000),
@@ -150,17 +151,18 @@ impl FakeTransaction {
         info!("submit_result: delayed: {:?}", self.hash);
         match event {
             TransactionStatus::Finalized(_) => Ok(self.hash),
-            TransactionStatus::Dropped => {
-                Err(Box::from(Error::Other("submit-error:dropped".to_string())))
-            }
-            TransactionStatus::Invalid => {
-                Err(Box::from(Error::Other("submit-error:invalid".to_string())))
-            }
-            TransactionStatus::Error => {
-                Err(Box::from(Error::Other("submit-error:error".to_string())))
-            }
+            TransactionStatus::Dropped(message) => Err(Box::from(Error::Other(format!(
+                "submit-error:dropped:{message}"
+            )))),
+            TransactionStatus::Invalid(message) => Err(Box::from(Error::Other(format!(
+                "submit-error:invalid:{message}"
+            )))),
+            TransactionStatus::Error(message) => Err(Box::from(Error::Other(format!(
+                "submit-error:error:{message}"
+            )))),
             TransactionStatus::Validated
-            | TransactionStatus::Broadcasted
+            | TransactionStatus::NoLongerInBestBlock
+            | TransactionStatus::Broadcasted(_)
             | TransactionStatus::InBlock(_) => todo!(),
         }
     }
@@ -176,7 +178,7 @@ mod test {
         let t = FakeTransaction::new(
             1,
             EventsStreamDef(vec![
-                EventDef::broadcasted(100),
+                EventDef::broadcasted(100, 3),
                 EventDef::validated(300),
                 EventDef::in_block(1, 1000),
                 EventDef::in_block(2, 1000),
@@ -188,7 +190,7 @@ mod test {
         assert_eq!(
             v,
             vec![
-                TransactionStatus::Broadcasted,
+                TransactionStatus::Broadcasted(3),
                 TransactionStatus::Validated,
                 TransactionStatus::InBlock(1u32.to_le_bytes()),
                 TransactionStatus::InBlock(2u32.to_le_bytes()),

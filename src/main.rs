@@ -10,6 +10,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use subxt::{self, tx::TxStatus, OnlineClient};
 use subxt_core::config::BlockHash;
 use tokio::select;
 use tracing::info;
@@ -17,23 +18,42 @@ use tracing_subscriber;
 
 trait TransactionStatusIsTerminal {
     fn is_terminal(&self) -> bool;
+    fn is_finalized(&self) -> bool;
+    fn is_error(&self) -> bool;
 }
 
 mod fake_transaction;
 mod fake_transaction_sink;
 mod runner;
+mod transaction_store;
 
 use fake_transaction::FakeTransaction;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum TransactionStatus<H: BlockHash> {
     Validated,
-    Broadcasted,
+    Broadcasted(u32),
     InBlock(H),
+    NoLongerInBestBlock,
     Finalized(H),
-    Dropped,
-    Invalid,
-    Error,
+    Dropped(String),
+    Invalid(String),
+    Error(String),
+}
+
+impl<C: subxt::Config> From<TxStatus<C, OnlineClient<C>>> for TransactionStatus<C::Hash> {
+    fn from(value: TxStatus<C, OnlineClient<C>>) -> Self {
+        match value {
+            TxStatus::Validated => TransactionStatus::Validated,
+            TxStatus::Broadcasted { num_peers } => TransactionStatus::Broadcasted(num_peers),
+            TxStatus::InBestBlock(tx) => TransactionStatus::InBlock(tx.extrinsic_hash()),
+            TxStatus::InFinalizedBlock(tx) => TransactionStatus::Finalized(tx.extrinsic_hash()),
+            TxStatus::Error { message } => TransactionStatus::Error(message),
+            TxStatus::Invalid { message } => TransactionStatus::Invalid(message),
+            TxStatus::Dropped { message } => TransactionStatus::Dropped(message),
+            TxStatus::NoLongerInBestBlock => TransactionStatus::NoLongerInBestBlock,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -48,7 +68,18 @@ pub enum Error {
 
 impl<H: BlockHash> TransactionStatusIsTerminal for TransactionStatus<H> {
     fn is_terminal(&self) -> bool {
-        matches!(self, Self::Finalized(_) | Self::Dropped | Self::Invalid)
+        matches!(
+            self,
+            Self::Finalized(_) | Self::Dropped(_) | Self::Invalid(_) | Self::Error(_)
+        )
+    }
+
+    fn is_finalized(&self) -> bool {
+        matches!(self, Self::Finalized(_))
+    }
+
+    fn is_error(&self) -> bool {
+        matches!(self, Self::Dropped(_) | Self::Invalid(_) | Self::Error(_))
     }
 }
 
