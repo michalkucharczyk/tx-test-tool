@@ -134,52 +134,12 @@ enum ExecutionResult {
 #[async_trait]
 trait TxTask {
     type HashType: BlockHash;
+    fn tx(&self) -> &dyn Transaction<HashType = Self::HashType>;
 
     async fn send_tx(
-        self,
+        self: Box<Self>,
         log: &dyn ExecutionLog<HashType = Self::HashType>,
         rpc: &dyn TransactionsSink<Self::HashType>,
-    ) -> ExecutionResult;
-}
-
-trait TxTaskStore {
-    type HashType: BlockHash;
-    fn pop() -> Option<Box<dyn TxTask<HashType = Self::HashType>>>;
-}
-
-struct FakeTxTask {
-    tx: FakeTransaction,
-}
-
-impl FakeTxTask {
-    fn new(tx: FakeTransaction) -> Self {
-        Self { tx }
-    }
-
-    fn tx(&self) -> &dyn Transaction<HashType = FakeHash> {
-        &self.tx
-    }
-}
-
-// #[async_trait]
-// impl TxTask for FakeTxTask {
-//     type HashType = FakeHash;
-//
-//     async fn send_tx(
-//         self,
-//         log: &dyn ExecutionLog<HashType = Self::HashType>,
-//         rpc: &dyn TransactionsSink<Self::HashType>,
-//     ) -> ExecutionResult {
-//         self.send_tx_inner(log, rpc).await
-//     }
-// }
-
-impl FakeTxTask {
-    // type HashType = FakeHash;
-    async fn send_tx_inner(
-        self,
-        log: &dyn ExecutionLog<HashType = FakeHash>,
-        rpc: &dyn TransactionsSink<FakeHash>,
     ) -> ExecutionResult {
         log.push_event(ExecutionEvent::popped(Instant::now()));
         let submission = rpc.submit_and_watch(self.tx());
@@ -215,6 +175,29 @@ impl FakeTxTask {
     }
 }
 
+trait TxTaskStore {
+    type HashType: BlockHash;
+    fn pop() -> Option<Box<dyn TxTask<HashType = Self::HashType>>>;
+}
+
+struct FakeTxTask {
+    tx: FakeTransaction,
+}
+
+impl FakeTxTask {
+    fn new(tx: FakeTransaction) -> Self {
+        Self { tx }
+    }
+}
+
+#[async_trait]
+impl TxTask for FakeTxTask {
+    type HashType = FakeHash;
+    fn tx(&self) -> &dyn Transaction<HashType = FakeHash> {
+        &self.tx
+    }
+}
+
 struct Runner {
     logs: HashMap<FakeHash, DefaultExecutionLog<FakeHash>>,
     transactions: Vec<FakeTxTask>,
@@ -246,9 +229,9 @@ impl Runner {
 
         let mut i = 0;
         for _ in 0..5000 {
-            let t = self.transactions.pop().unwrap();
+            let t = Box::new(self.transactions.pop().unwrap());
             let log = &self.logs[&t.tx().hash()];
-            workers.push(t.send_tx_inner(log, &self.rpc));
+            workers.push(t.send_tx(log, &self.rpc));
             i = i + 1;
         }
 
@@ -259,9 +242,10 @@ impl Runner {
                     match done {
                         Some(tx_hash) => {
                             if let Some(task) = self.transactions.pop() {
+                                let task = Box::from(task);
                                 // let elapsed = started.elapsed();
                                 let log = &self.logs[&task.tx().hash()];
-                                workers.push(task.send_tx_inner(log, &self.rpc));
+                                workers.push(task.send_tx(log, &self.rpc));
                             }
                             info!(?tx_hash, workers_len=workers.len(), "FINISHED");
                         }

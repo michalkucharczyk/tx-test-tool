@@ -107,11 +107,11 @@ pub trait TransactionsSink<H: BlockHash>: Sync {
     async fn submit_and_watch(
         &self,
         tx: &dyn Transaction<HashType = H>,
-    ) -> Result<StreamOf<TransactionStatus<H>>, Box<dyn std::error::Error>>;
+    ) -> Result<StreamOf<TransactionStatus<H>>, Box<dyn std::error::Error + Send>>;
     async fn submit(
         &self,
         tx: &dyn Transaction<HashType = H>,
-    ) -> Result<H, Box<dyn std::error::Error>>;
+    ) -> Result<H, Box<dyn std::error::Error + Send>>;
 
     ///Current count of transactions being processed by sink
     fn count(&self) -> usize;

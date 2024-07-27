@@ -18,7 +18,7 @@ impl TransactionsSink<FakeHash> for FakeTransactionSink {
     async fn submit_and_watch(
         &self,
         tx: &dyn Transaction<HashType = FakeHash>,
-    ) -> Result<StreamOf<TransactionStatus<FakeHash>>, Box<dyn std::error::Error>> {
+    ) -> Result<StreamOf<TransactionStatus<FakeHash>>, Box<dyn std::error::Error + Send>> {
         let hash = tx.hash();
         self.txs.write().insert(tx.hash());
         let txs = self.txs.clone();
@@ -37,7 +37,7 @@ impl TransactionsSink<FakeHash> for FakeTransactionSink {
     async fn submit(
         &self,
         tx: &dyn Transaction<HashType = FakeHash>,
-    ) -> Result<FakeHash, Box<dyn std::error::Error>> {
+    ) -> Result<FakeHash, Box<dyn std::error::Error + Send>> {
         self.txs.write().insert(tx.hash());
         let tx = tx.as_any().downcast_ref::<FakeTransaction>().unwrap();
         let result = tx.submit_result().await;
