@@ -358,7 +358,7 @@ impl<H: BlockHash, T: TxTask<HashType = H> + Send + 'static, Sink: TransactionsS
     }
 }
 
-mod fuck {
+mod subxt_api_connector {
     use super::subxt_transaction::EthRuntimeConfig;
     use std::error::Error;
     use std::sync::Arc;
@@ -522,12 +522,14 @@ mod tests {
         // let api = OnlineClient::<EthRuntimeConfig>::from_insecure_url("ws://127.0.0.1:9933")
         //     .await
         //     .unwrap();
-        let api = fuck::connect("ws://127.0.0.1:9933").await.unwrap();
+        let api = subxt_api_connector::connect("ws://127.0.0.1:9933")
+            .await
+            .unwrap();
 
         let rpc = TransactionsSinkSubxt::<EthRuntimeConfig>::new();
 
-        let mut transactions = (0..30000)
-            .map(|i| SubxtEthTxTask::new_watched(xxx(&api, i + 30000)))
+        let mut transactions = (0..300000)
+            .map(|i| SubxtEthTxTask::new_watched(xxx(&api, i + 60000)))
             .rev()
             // .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
             .collect::<Vec<_>>();
