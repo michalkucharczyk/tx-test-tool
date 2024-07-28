@@ -1,4 +1,4 @@
-use jsonrpsee_types::ErrorObject;
+use jsonrpsee::types::ErrorObject;
 use std::collections::HashMap;
 
 use self::fake_transaction::{FakeHash, FakeTransaction};
@@ -66,15 +66,23 @@ trait ExecutionLog: Sync {
     fn get_resent_count(&self) -> u32;
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 struct DefaultExecutionLog<H: BlockHash> {
     events: RwLock<Vec<ExecutionEvent<H>>>,
+}
+impl<H: BlockHash> Default for DefaultExecutionLog<H> {
+    fn default() -> Self {
+        Self {
+            events: Default::default(),
+        }
+    }
 }
 
 impl<H: BlockHash> ExecutionLog for DefaultExecutionLog<H> {
     type HashType = H;
 
     fn push_event(&self, event: ExecutionEvent<Self::HashType>) {
+        info!(?event, "push_event:");
         self.events.write().push(event);
     }
 
@@ -126,11 +134,20 @@ impl<H: BlockHash> ExecutionLog for DefaultExecutionLog<H> {
     }
 }
 
-#[derive(Debug)]
-enum ExecutionResult {
-    NeedsResubmit,
+enum ExecutionResult<H: BlockHash> {
+    NeedsResubmit(Box<dyn TxTask<HashType = H>>),
     Error,
     Done,
+}
+
+impl<H: BlockHash> std::fmt::Debug for ExecutionResult<H> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NeedsResubmit(t) => write!(f, "NeedsResubmit {:?}", t.tx().hash()),
+            Self::Error => write!(f, "Error"),
+            Self::Done => write!(f, "Done"),
+        }
+    }
 }
 
 trait NeedsResubmit {
@@ -148,6 +165,7 @@ impl NeedsResubmit for Error {
         if let Error::Subxt(subxt::Error::Rpc(subxt::error::RpcError::ClientError(ref o))) = self {
             if let Some(eo) = o.source() {
                 let code = eo.downcast_ref::<ErrorObject>().unwrap().code();
+                //polkdot-sdk/substrate/client/rpc-api/author -> POOL_IMMEDIATELY_DROPPED
                 if code == 1016 {
                     return true;
                 }
@@ -167,29 +185,31 @@ trait TxTask {
         self: Box<Self>,
         log: &dyn ExecutionLog<HashType = Self::HashType>,
         rpc: &dyn TransactionsSink<Self::HashType>,
-    ) -> ExecutionResult {
+    ) -> ExecutionResult<Self::HashType>
+    where
+        Self: Sized + 'static,
+    {
         log.push_event(ExecutionEvent::sent());
         match rpc.submit_and_watch(self.tx()).await {
             Ok(mut stream) => {
                 log.push_event(ExecutionEvent::submit_and_watch_result(Ok(())));
-                let mut result = None;
                 while let Some(status) = stream.next().await {
-                    result = if status.is_finalized() {
-                        Some(ExecutionResult::Done)
+                    log.push_event(status.clone().into());
+                    if status.is_finalized() {
+                        return ExecutionResult::Done;
                     } else if status.needs_resubmission() {
-                        Some(ExecutionResult::NeedsResubmit)
+                        return ExecutionResult::NeedsResubmit(self);
                     } else if status.is_error() {
-                        Some(ExecutionResult::Error)
+                        return ExecutionResult::Error;
                     } else {
-                        None
-                    };
-                    log.push_event(status.into());
+                        continue;
+                    }
                 }
-                result.expect("stream shall terminated with error or finalized. qed.")
+                ExecutionResult::Error
             }
             Err(e) => {
                 let result = if e.needs_resubmission() {
-                    ExecutionResult::NeedsResubmit
+                    ExecutionResult::NeedsResubmit(self)
                 } else {
                     ExecutionResult::Error
                 };
@@ -203,7 +223,10 @@ trait TxTask {
         self: Box<Self>,
         log: &dyn ExecutionLog<HashType = Self::HashType>,
         rpc: &dyn TransactionsSink<Self::HashType>,
-    ) -> ExecutionResult {
+    ) -> ExecutionResult<Self::HashType>
+    where
+        Self: Sized + 'static,
+    {
         log.push_event(ExecutionEvent::sent());
         match rpc.submit(self.tx()).await {
             Ok(_) => {
@@ -211,8 +234,13 @@ trait TxTask {
                 ExecutionResult::Done
             }
             Err(e) => {
+                let result = if e.needs_resubmission() {
+                    ExecutionResult::NeedsResubmit(self)
+                } else {
+                    ExecutionResult::Error
+                };
                 log.push_event(ExecutionEvent::submit_result(Err(e)));
-                ExecutionResult::NeedsResubmit
+                result
             }
         }
     }
@@ -221,7 +249,10 @@ trait TxTask {
         self: Box<Self>,
         log: &dyn ExecutionLog<HashType = Self::HashType>,
         rpc: &dyn TransactionsSink<Self::HashType>,
-    ) -> ExecutionResult {
+    ) -> ExecutionResult<Self::HashType>
+    where
+        Self: Sized + 'static,
+    {
         if self.is_watched() {
             self.send_watched_tx(log, rpc).await
         } else {
@@ -261,32 +292,23 @@ impl TxTask for FakeTxTask {
     }
 }
 
-struct Runner {
-    logs: HashMap<FakeHash, DefaultExecutionLog<FakeHash>>,
-    transactions: Vec<FakeTxTask>,
-    rpc: FakeTransactionSink,
+struct Runner<H: BlockHash, T: TxTask<HashType = H>, Sink: TransactionsSink<H>> {
+    logs: HashMap<H, DefaultExecutionLog<H>>,
+    transactions: Vec<T>,
+    rpc: Sink,
 }
 
-impl Runner {
-    fn new() -> Self {
-        let mut transactions = (0..10)
-            .map(|i| FakeTxTask::new_watched(FakeTransaction::new_finalizable_quick(i)))
-            // .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
-            .collect::<Vec<_>>();
+type FakeTxRunner = Runner<FakeHash, FakeTxTask, FakeTransactionSink>;
 
-        transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_invalid(
-            11u32, 300,
-        )));
-        transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_error(
-            12u32, 300,
-        )));
-
+impl<H: BlockHash, T: TxTask<HashType = H> + Send + 'static, Sink: TransactionsSink<H>>
+    Runner<H, T, Sink>
+{
+    fn new(rpc: Sink, transactions: Vec<T>) -> Self {
         let logs = transactions
             .iter()
-            .map(|t| ((*t.tx()).hash(), DefaultExecutionLog::default()))
+            .map(|t| (t.tx().hash(), DefaultExecutionLog::default()))
             .collect();
 
-        let rpc = FakeTransactionSink::new();
         Self {
             logs,
             transactions,
@@ -298,12 +320,16 @@ impl Runner {
         let mut workers = FuturesUnordered::new();
 
         let mut i = 0;
-        for _ in 0..5 {
-            let t = Box::new(self.transactions.pop().unwrap());
-            let log = &self.logs[&t.tx().hash()];
-            log.push_event(ExecutionEvent::popped());
-            workers.push(t.execute(log, &self.rpc));
-            i = i + 1;
+        for _ in 0..15000 {
+            if let Some(t) = self.transactions.pop() {
+                let t = Box::new(t);
+                let log = &self.logs[&t.tx().hash()];
+                log.push_event(ExecutionEvent::popped());
+                workers.push(t.execute(log, &self.rpc));
+                i = i + 1;
+            } else {
+                break;
+            }
         }
 
         loop {
@@ -311,14 +337,14 @@ impl Runner {
                 done = workers.next() => {
                     // info!(?done, workers_len=workers.len(), "DONE");
                     match done {
-                        Some(tx_hash) => {
+                        Some(result) => {
                             if let Some(task) = self.transactions.pop() {
                                 let task = Box::from(task);
                                 let log = &self.logs[&task.tx().hash()];
                                 log.push_event(ExecutionEvent::popped());
                                 workers.push(task.execute(log, &self.rpc));
                             }
-                            info!(?tx_hash, workers_len=workers.len(), "FINISHED");
+                            info!(?result, workers_len=workers.len(), "FINISHED");
                         }
                         None => {
                             info!("done");
@@ -332,15 +358,181 @@ impl Runner {
     }
 }
 
-//////
+mod fuck {
+    use super::subxt_transaction::EthRuntimeConfig;
+    use std::error::Error;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use subxt::backend::legacy::LegacyBackend;
+    use subxt::OnlineClient;
+    use tracing::info;
+
+    mod my_jsonrpsee_helpers {
+        pub use jsonrpsee::{
+            client_transport::ws::{self, EitherStream, Url, WsTransportClientBuilder},
+            core::client::{Client, Error},
+        };
+        use tokio_util::compat::Compat;
+
+        pub type Sender = ws::Sender<Compat<EitherStream>>;
+        pub type Receiver = ws::Receiver<Compat<EitherStream>>;
+
+        /// Build WS RPC client from URL
+        pub async fn client(url: &str) -> Result<Client, Error> {
+            let (sender, receiver) = ws_transport(url).await?;
+            Ok(Client::builder()
+                .max_buffer_capacity_per_subscription(4096)
+                .max_concurrent_requests(128000)
+                .build_with_tokio(sender, receiver))
+        }
+
+        async fn ws_transport(url: &str) -> Result<(Sender, Receiver), Error> {
+            let url = Url::parse(url).map_err(|e| Error::Transport(e.into()))?;
+            WsTransportClientBuilder::default()
+                .build(url)
+                .await
+                .map_err(|e| Error::Transport(e.into()))
+        }
+    }
+    /// Maximal number of connection attempts.
+    const MAX_ATTEMPTS: usize = 10;
+    /// Delay period between failed connection attempts.
+    const RETRY_DELAY: Duration = Duration::from_secs(1);
+    pub async fn connect(url: &str) -> Result<OnlineClient<EthRuntimeConfig>, Box<dyn Error>> {
+        for i in 0..MAX_ATTEMPTS {
+            info!("Attempt #{}: Connecting to {}", i, url);
+            // let maybe_client = OnlineClient::<EthRuntimeConfig>::from_url(url).await;
+            let backend = LegacyBackend::builder().build(subxt::backend::rpc::RpcClient::new(
+                my_jsonrpsee_helpers::client(url).await?,
+            ));
+            let maybe_client = OnlineClient::from_backend(Arc::new(backend)).await;
+
+            // let maybe_client = OnlineClient::<EthRuntimeConfig>::from_rpc_client(client);
+            match maybe_client {
+                Ok(client) => {
+                    info!("Connection established to: {}", url);
+                    return Ok(client);
+                }
+                Err(err) => {
+                    info!("API client {} error: {:?}", url, err);
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+            };
+        }
+
+        let err = format!(
+            "Failed to connect to {} after {} attempts",
+            url, MAX_ATTEMPTS
+        );
+        info!("{}", err);
+        Err(err.into())
+    }
+}
 
 #[cfg(test)]
 mod tests {
+    use self::subxt_transaction::TransactionsSinkSubxt;
+
+    use super::subxt_transaction::{EthRuntimeConfig, TransactionEth};
     use super::*;
+    use subxt::config::substrate::SubstrateExtrinsicParamsBuilder as Params;
+    use subxt::dynamic::Value;
+    use subxt_signer::eth::dev;
     #[tokio::test]
     async fn oh_god() {
         init_logger();
-        let mut r = Runner::new();
+
+        let rpc = FakeTransactionSink::new();
+        let mut transactions = (0..10)
+            .map(|i| FakeTxTask::new_watched(FakeTransaction::new_finalizable_quick(i)))
+            // .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
+            .collect::<Vec<_>>();
+
+        transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_invalid(
+            11u32, 300,
+        )));
+        transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_error(
+            12u32, 300,
+        )));
+
+        let mut r = Runner::new(rpc, transactions);
+        r.run_poc2().await;
+    }
+
+    struct SubxtEthTxTask {
+        tx: TransactionEth,
+        watched: bool,
+    }
+
+    impl SubxtEthTxTask {
+        fn new_watched(tx: TransactionEth) -> Self {
+            Self { tx, watched: true }
+        }
+        fn new_unwatched(tx: TransactionEth) -> Self {
+            Self { tx, watched: false }
+        }
+    }
+
+    #[async_trait]
+    impl TxTask for SubxtEthTxTask {
+        type HashType = <EthRuntimeConfig as subxt::Config>::Hash;
+        fn tx(&self) -> &dyn Transaction<HashType = Self::HashType> {
+            &self.tx
+        }
+
+        fn is_watched(&self) -> bool {
+            self.watched
+        }
+    }
+
+    fn xxx(api: &OnlineClient<EthRuntimeConfig>, nonce: u64) -> TransactionEth {
+        let alith = dev::alith();
+        let baltathar = dev::baltathar();
+
+        let nonce = nonce;
+        let tx_params = Params::new().nonce(nonce).build();
+
+        // let tx_call = subxt::dynamic::tx("System", "remark", vec![Value::from_bytes("heeelooo")]);
+        let tx_call = subxt::dynamic::tx(
+            "Balances",
+            "transfer_keep_alive",
+            vec![
+                // // Substrate:
+                // Value::unnamed_variant("Id", [Value::from_bytes(receiver.public())]),
+                // Eth:
+                Value::unnamed_composite(vec![Value::from_bytes(alith.account_id())]),
+                Value::u128(1u32.into()),
+            ],
+        );
+
+        let tx: TransactionEth = api
+            .tx()
+            .create_signed_offline(&tx_call, &baltathar, tx_params)
+            .unwrap();
+
+        info!("tx hash: {:?}", tx.hash());
+
+        tx
+    }
+
+    #[tokio::test]
+    async fn oh_god2() {
+        init_logger();
+
+        // let api = OnlineClient::<EthRuntimeConfig>::from_insecure_url("ws://127.0.0.1:9933")
+        //     .await
+        //     .unwrap();
+        let api = fuck::connect("ws://127.0.0.1:9933").await.unwrap();
+
+        let rpc = TransactionsSinkSubxt::<EthRuntimeConfig>::new();
+
+        let mut transactions = (0..30000)
+            .map(|i| SubxtEthTxTask::new_watched(xxx(&api, i + 30000)))
+            .rev()
+            // .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
+            .collect::<Vec<_>>();
+
+        let mut r = Runner::new(rpc, transactions);
         r.run_poc2().await;
     }
 }

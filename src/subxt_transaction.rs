@@ -14,7 +14,7 @@ use subxt_core::config::BlockHash;
 use subxt_signer::eth::{dev, AccountId20, Keypair as EthKeypair, Signature};
 use tracing::info;
 
-enum EthRuntimeConfig {}
+pub enum EthRuntimeConfig {}
 impl subxt::Config for EthRuntimeConfig {
     type Hash = subxt::utils::H256;
     type AccountId = AccountId20;
@@ -27,10 +27,13 @@ impl subxt::Config for EthRuntimeConfig {
     type AssetId = u32;
 }
 
-type TransactionSubxt<C> = SubmittableExtrinsic<C, OnlineClient<C>>;
+pub type TransactionSubxt<C> = SubmittableExtrinsic<C, OnlineClient<C>>;
 
-type TransactionSubstrate = TransactionSubxt<PolkadotConfig>;
-type TransactionEth = TransactionSubxt<EthRuntimeConfig>;
+pub type TransactionSubstrate = TransactionSubxt<PolkadotConfig>;
+pub type TransactionEth = TransactionSubxt<EthRuntimeConfig>;
+
+// todo: shall  be part of TransactionSubxt - to update mortality.
+// type TransactionSubxt2 = subxt::tx::DynamicPayload;
 
 impl<C: subxt::Config> Transaction for TransactionSubxt<C> {
     type HashType = <C as subxt::Config>::Hash;
@@ -44,8 +47,16 @@ impl<C: subxt::Config> Transaction for TransactionSubxt<C> {
 
 type StreamOf<I> = Pin<Box<dyn futures::Stream<Item = I> + Send>>;
 
-struct TransactionsSinkSubxt<C: subxt::Config> {
+pub struct TransactionsSinkSubxt<C: subxt::Config> {
     _p: PhantomData<C>,
+}
+
+impl<C: subxt::Config> TransactionsSinkSubxt<C> {
+    pub fn new() -> Self {
+        Self {
+            _p: Default::default(),
+        }
+    }
 }
 
 #[async_trait]
@@ -55,15 +66,17 @@ impl<C: subxt::Config> TransactionsSink<<C as subxt::Config>::Hash> for Transact
         tx: &dyn Transaction<HashType = <C as subxt::Config>::Hash>,
     ) -> Result<StreamOf<TransactionStatus<<C as subxt::Config>::Hash>>, Error> {
         let tx = tx.as_any().downcast_ref::<TransactionSubxt<C>>().unwrap();
-        Ok(tx
-            .submit_and_watch()
-            .await
-            .unwrap()
-            .map(|e| {
-                info!(evnt=?e, "TransactionsSinkSubxt::map");
-                e.unwrap().into()
-            })
-            .boxed())
+        let result = tx.submit_and_watch().await;
+
+        match result {
+            Ok(stream) => Ok(stream
+                .map(|e| {
+                    // info!(evnt=?e, "TransactionsSinkSubxt::map");
+                    e.unwrap().into()
+                })
+                .boxed()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     async fn submit(
@@ -113,9 +126,7 @@ async fn test_subxt_send() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("tx hash: {:?}", tx.hash());
 
-    let sink = TransactionsSinkSubxt::<EthRuntimeConfig> {
-        _p: Default::default(),
-    };
+    let sink = TransactionsSinkSubxt::<EthRuntimeConfig>::new();
 
     let tx: Box<dyn Transaction<HashType = <EthRuntimeConfig as subxt::Config>::Hash>> =
         Box::from(tx);
