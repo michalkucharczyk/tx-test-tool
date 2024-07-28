@@ -9,9 +9,12 @@ edition = "2021"
 async-trait = "0.1.81"
 futures = "0.3.30"
 futures-util = "0.3.30"
+jsonrpsee = { version = "0.24.0", features = ["async-client", "client-web-transport"] }
+jsonrpsee-types = "0.24.0"
 parking_lot = "0.12.3"
 rand = "0.8.5"
 subxt = {version = "0.37.0", features =["substrate-compat"] }
+subxt-signer = { version = "0.37.0", features = ["unstable-eth"] }
 subxt-core = "0.37.0"
 thiserror = "1.0.63"
 time = { version = "0.3.36", features = ["formatting", "local-offset", "macros"] }

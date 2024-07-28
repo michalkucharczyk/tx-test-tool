@@ -86,7 +86,10 @@ mod test {
         let t = FakeTransaction::new_droppable(1, 10);
         let t: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t);
         let r = rpc.submit(&*t).await.unwrap_err();
-        assert_eq!(r, Error::Other("submit-error:dropped:xxx".to_string()));
+        assert_eq!(
+            r.to_string(),
+            Error::Other("submit-error:dropped:xxx".to_string()).to_string()
+        );
     }
 
     #[tokio::test]
@@ -95,7 +98,10 @@ mod test {
         let t = FakeTransaction::new_invalid(1, 10);
         let t: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t);
         let r = rpc.submit(&*t).await.unwrap_err();
-        assert_eq!(r, Error::Other("submit-error:invalid:xxx".to_string()));
+        assert_eq!(
+            r.to_string(),
+            Error::Other("submit-error:invalid:xxx".to_string()).to_string()
+        );
     }
 
     #[tokio::test]
@@ -104,7 +110,10 @@ mod test {
         let t = FakeTransaction::new_error(1, 10);
         let t: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t);
         let r = rpc.submit(&*t).await.unwrap_err();
-        assert_eq!(r, Error::Other("submit-error:error:xxx".to_string()));
+        assert_eq!(
+            r.to_string(),
+            Error::Other("submit-error:error:xxx".to_string()).to_string()
+        );
     }
 
     #[tokio::test]

@@ -1,3 +1,4 @@
+use jsonrpsee_types::ErrorObject;
 use std::collections::HashMap;
 
 use self::fake_transaction::{FakeHash, FakeTransaction};
@@ -128,7 +129,32 @@ impl<H: BlockHash> ExecutionLog for DefaultExecutionLog<H> {
 #[derive(Debug)]
 enum ExecutionResult {
     NeedsResubmit,
+    Error,
     Done,
+}
+
+trait NeedsResubmit {
+    fn needs_resubmission(&self) -> bool;
+}
+
+impl<H: BlockHash> NeedsResubmit for TransactionStatus<H> {
+    fn needs_resubmission(&self) -> bool {
+        matches!(self, TransactionStatus::Dropped(_))
+    }
+}
+
+impl NeedsResubmit for Error {
+    fn needs_resubmission(&self) -> bool {
+        if let Error::Subxt(subxt::Error::Rpc(subxt::error::RpcError::ClientError(ref o))) = self {
+            if let Some(eo) = o.source() {
+                let code = eo.downcast_ref::<ErrorObject>().unwrap().code();
+                if code == 1016 {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
 }
 
 #[async_trait]
@@ -150,8 +176,10 @@ trait TxTask {
                 while let Some(status) = stream.next().await {
                     result = if status.is_finalized() {
                         Some(ExecutionResult::Done)
-                    } else if status.is_error() {
+                    } else if status.needs_resubmission() {
                         Some(ExecutionResult::NeedsResubmit)
+                    } else if status.is_error() {
+                        Some(ExecutionResult::Error)
                     } else {
                         None
                     };
@@ -160,8 +188,13 @@ trait TxTask {
                 result.expect("stream shall terminated with error or finalized. qed.")
             }
             Err(e) => {
+                let result = if e.needs_resubmission() {
+                    ExecutionResult::NeedsResubmit
+                } else {
+                    ExecutionResult::Error
+                };
                 log.push_event(ExecutionEvent::submit_and_watch_result(Err(e)));
-                ExecutionResult::NeedsResubmit
+                result
             }
         }
     }
@@ -171,7 +204,17 @@ trait TxTask {
         log: &dyn ExecutionLog<HashType = Self::HashType>,
         rpc: &dyn TransactionsSink<Self::HashType>,
     ) -> ExecutionResult {
-        todo!()
+        log.push_event(ExecutionEvent::sent());
+        match rpc.submit(self.tx()).await {
+            Ok(_) => {
+                log.push_event(ExecutionEvent::submit_result(Ok(())));
+                ExecutionResult::Done
+            }
+            Err(e) => {
+                log.push_event(ExecutionEvent::submit_result(Err(e)));
+                ExecutionResult::NeedsResubmit
+            }
+        }
     }
 
     async fn execute(
@@ -194,11 +237,15 @@ trait TxTaskStore {
 
 struct FakeTxTask {
     tx: FakeTransaction,
+    watched: bool,
 }
 
 impl FakeTxTask {
-    fn new(tx: FakeTransaction) -> Self {
-        Self { tx }
+    fn new_watched(tx: FakeTransaction) -> Self {
+        Self { tx, watched: true }
+    }
+    fn new_unwatched(tx: FakeTransaction) -> Self {
+        Self { tx, watched: false }
     }
 }
 
@@ -210,7 +257,7 @@ impl TxTask for FakeTxTask {
     }
 
     fn is_watched(&self) -> bool {
-        true
+        self.watched
     }
 }
 
@@ -222,10 +269,17 @@ struct Runner {
 
 impl Runner {
     fn new() -> Self {
-        let transactions = (0..10_000)
-            .map(|i| FakeTxTask::new(FakeTransaction::new_finalizable_quick(i)))
+        let mut transactions = (0..10)
+            .map(|i| FakeTxTask::new_watched(FakeTransaction::new_finalizable_quick(i)))
             // .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
             .collect::<Vec<_>>();
+
+        transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_invalid(
+            11u32, 300,
+        )));
+        transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_error(
+            12u32, 300,
+        )));
 
         let logs = transactions
             .iter()
@@ -244,7 +298,7 @@ impl Runner {
         let mut workers = FuturesUnordered::new();
 
         let mut i = 0;
-        for _ in 0..5000 {
+        for _ in 0..5 {
             let t = Box::new(self.transactions.pop().unwrap());
             let log = &self.logs[&t.tx().hash()];
             log.push_event(ExecutionEvent::popped());

@@ -25,7 +25,7 @@ trait TransactionStatusIsTerminal {
 mod fake_transaction;
 mod fake_transaction_sink;
 mod runner;
-mod transaction_store;
+mod subxt_transaction;
 
 use fake_transaction::FakeTransaction;
 
@@ -56,11 +56,11 @@ impl<C: subxt::Config> From<TxStatus<C, OnlineClient<C>>> for TransactionStatus<
     }
 }
 
-#[derive(Debug, thiserror::Error, PartialEq)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
-    // /// Codec error.
-    // #[error("subxt error: {0}")]
-    // Subxt(#[from] subxt::Error),
+    /// Subxt error.
+    #[error("subxt error: {0}")]
+    Subxt(#[from] subxt::Error),
     /// Other error.
     #[error("Other error: {0}")]
     Other(String),
