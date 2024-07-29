@@ -1,3 +1,7 @@
+//todo:
+#![allow(dead_code)]
+//todo:
+#![allow(unused_imports)]
 use async_trait::async_trait;
 use futures::stream::{self};
 use futures_util::{stream::FuturesUnordered, StreamExt};
@@ -83,10 +87,6 @@ impl<H: BlockHash> TransactionStatusIsTerminal for TransactionStatus<H> {
     }
 }
 
-// pub enum ResbumitReason {
-//     Error,
-// }
-
 // pub enum TransactiondStoreStatus {
 //     Ready,
 //     InProgress,
@@ -115,57 +115,6 @@ pub trait TransactionsSink<H: BlockHash>: Sync {
     fn count(&self) -> usize;
 }
 
-// pub trait TransactionsStore<H: BlockHash, T: Transaction<H>>: Sync {
-//     fn ready(&self) -> impl IntoIterator<Item = >;
-// }
-
-// #[async_trait]
-// pub trait ResubmitQueue<H: Hash, T: Transaction<H>>: Sync {
-//     async fn resubmit(tx: T, reason: ResbumitReason);
-//     fn stream_of_resubmits(&self) -> StreamOf<T>;
-// }
-
-////////////////////////////////////////////////////////////////////////////////
-
-async fn send_txs(i: usize) -> (usize, u64, Instant) {
-    let delay = rand::thread_rng().gen_range(1000..10000);
-    info!("send_txs start: {i} / {delay}");
-    let start = Instant::now();
-    tokio::time::sleep(Duration::from_millis(delay)).await;
-    info!("send_txs done: {i} / {delay}");
-    (i, delay, start)
-}
-
-async fn run() {
-    let mut workers = FuturesUnordered::new();
-    let mut cnt = 0;
-
-    for i in 0..10000 {
-        workers.push(send_txs(i));
-        cnt = i;
-    }
-
-    loop {
-        select! {
-            done = workers.next() => {
-                match done {
-                    Some((i, delay, started)) => {
-                        cnt = cnt + 1;
-                        let elapsed = started.elapsed();
-                        let diff = elapsed.as_millis() - delay as u128;
-                        info!("FINISHED {i} slept:{delay} actual:{elapsed:?} diff:{diff} => send_txs push: {cnt} / {}", workers.len());
-                        workers.push(send_txs(cnt));
-                    }
-                    None => {
-                        info!("done");
-                        break;
-                    }
-                }
-            }
-        }
-    }
-}
-
 fn init_logger() {
     use std::sync::Once;
     static INIT: Once = Once::new();
@@ -185,5 +134,4 @@ fn init_logger() {
 async fn main() {
     init_logger();
     info!("Hello, world!");
-    run().await;
 }

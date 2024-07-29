@@ -1,5 +1,10 @@
+//todo:
+#![allow(dead_code)]
+//todo:
+#![allow(unused_imports)]
 use jsonrpsee::types::ErrorObject;
 use std::collections::HashMap;
+use std::marker::PhantomData;
 
 use self::fake_transaction::{FakeHash, FakeTransaction};
 use self::fake_transaction_sink::FakeTransactionSink;
@@ -134,84 +139,128 @@ impl<H: BlockHash> ExecutionLog for DefaultExecutionLog<H> {
     }
 }
 
+#[derive(Debug)]
+pub enum ResubmitReason {
+    Dropped,
+    Mortality,
+    RpcError,
+}
+
 enum ExecutionResult<H: BlockHash> {
-    NeedsResubmit(Box<dyn TxTask<HashType = H>>),
-    Error,
-    Done,
+    NeedsResubmit(ResubmitReason, H),
+    Error(H),
+    Done(H),
 }
 
 impl<H: BlockHash> std::fmt::Debug for ExecutionResult<H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NeedsResubmit(t) => write!(f, "NeedsResubmit {:?}", t.tx().hash()),
-            Self::Error => write!(f, "Error"),
-            Self::Done => write!(f, "Done"),
+            Self::NeedsResubmit(r, h) => write!(f, "NeedsResubmit {r:?} {:?}", h),
+            Self::Error(h) => write!(f, "Error {h:?}"),
+            Self::Done(h) => write!(f, "Doneh {h:?}"),
         }
     }
 }
 
 trait NeedsResubmit {
-    fn needs_resubmission(&self) -> bool;
+    fn needs_resubmission(&self) -> Option<ResubmitReason>;
 }
 
 impl<H: BlockHash> NeedsResubmit for TransactionStatus<H> {
-    fn needs_resubmission(&self) -> bool {
-        matches!(self, TransactionStatus::Dropped(_))
+    fn needs_resubmission(&self) -> Option<ResubmitReason> {
+        matches!(self, TransactionStatus::Dropped(_)).then_some(ResubmitReason::Dropped)
     }
 }
 
 impl NeedsResubmit for Error {
-    fn needs_resubmission(&self) -> bool {
+    fn needs_resubmission(&self) -> Option<ResubmitReason> {
         if let Error::Subxt(subxt::Error::Rpc(subxt::error::RpcError::ClientError(ref o))) = self {
             if let Some(eo) = o.source() {
                 let code = eo.downcast_ref::<ErrorObject>().unwrap().code();
                 //polkdot-sdk/substrate/client/rpc-api/author -> POOL_IMMEDIATELY_DROPPED
                 if code == 1016 {
-                    return true;
+                    return Some(ResubmitReason::Dropped);
                 }
             }
         }
-        return false;
+        return None;
     }
 }
 
 #[async_trait]
-trait TxTask {
+trait TxTask: Sync {
     type HashType: BlockHash;
-    fn tx(&self) -> &dyn Transaction<HashType = Self::HashType>;
+    type Transaction: Transaction;
+
+    fn tx(&self) -> &Self::Transaction;
     fn is_watched(&self) -> bool;
 
     async fn send_watched_tx(
-        self: Box<Self>,
+        self: Self,
         log: &dyn ExecutionLog<HashType = Self::HashType>,
         rpc: &dyn TransactionsSink<Self::HashType>,
-    ) -> ExecutionResult<Self::HashType>
-    where
-        Self: Sized + 'static,
-    {
+    ) -> ExecutionResult<Self::HashType>;
+
+    async fn send_tx(
+        self: Self,
+        log: &dyn ExecutionLog<HashType = Self::HashType>,
+        rpc: &dyn TransactionsSink<Self::HashType>,
+    ) -> ExecutionResult<Self::HashType>;
+
+    async fn execute(
+        self: Self,
+        log: &dyn ExecutionLog<HashType = Self::HashType>,
+        rpc: &dyn TransactionsSink<Self::HashType>,
+    ) -> ExecutionResult<Self::HashType>;
+}
+
+struct DefaultTxTask<T: Transaction> {
+    tx: T,
+    watched: bool,
+}
+
+#[async_trait]
+impl<H: BlockHash, T: Transaction<HashType = H> + Send> TxTask for DefaultTxTask<T> {
+    type HashType = H;
+    type Transaction = T;
+
+    fn tx(&self) -> &T {
+        &self.tx
+    }
+
+    fn is_watched(&self) -> bool {
+        self.watched
+    }
+
+    async fn send_watched_tx(
+        self: Self,
+        log: &dyn ExecutionLog<HashType = Self::HashType>,
+        rpc: &dyn TransactionsSink<Self::HashType>,
+    ) -> ExecutionResult<Self::HashType> {
         log.push_event(ExecutionEvent::sent());
         match rpc.submit_and_watch(self.tx()).await {
             Ok(mut stream) => {
                 log.push_event(ExecutionEvent::submit_and_watch_result(Ok(())));
                 while let Some(status) = stream.next().await {
+                    info!("{status:?}");
                     log.push_event(status.clone().into());
                     if status.is_finalized() {
-                        return ExecutionResult::Done;
-                    } else if status.needs_resubmission() {
-                        return ExecutionResult::NeedsResubmit(self);
+                        return ExecutionResult::Done(self.tx().hash());
+                    } else if let Some(reason) = status.needs_resubmission() {
+                        return ExecutionResult::NeedsResubmit(reason, self.tx().hash());
                     } else if status.is_error() {
-                        return ExecutionResult::Error;
+                        return ExecutionResult::Error(self.tx().hash());
                     } else {
                         continue;
                     }
                 }
-                ExecutionResult::Error
+                ExecutionResult::Error(self.tx().hash())
             }
             Err(e) => {
-                let result = if e.needs_resubmission() {
-                    ExecutionResult::NeedsResubmit(self)
+                let result = if let Some(reason) = e.needs_resubmission() {
+                    ExecutionResult::NeedsResubmit(reason, self.tx().hash())
                 } else {
-                    ExecutionResult::Error
+                    ExecutionResult::Error(self.tx().hash())
                 };
                 log.push_event(ExecutionEvent::submit_and_watch_result(Err(e)));
                 result
@@ -220,24 +269,21 @@ trait TxTask {
     }
 
     async fn send_tx(
-        self: Box<Self>,
+        self: Self,
         log: &dyn ExecutionLog<HashType = Self::HashType>,
         rpc: &dyn TransactionsSink<Self::HashType>,
-    ) -> ExecutionResult<Self::HashType>
-    where
-        Self: Sized + 'static,
-    {
+    ) -> ExecutionResult<Self::HashType> {
         log.push_event(ExecutionEvent::sent());
         match rpc.submit(self.tx()).await {
             Ok(_) => {
                 log.push_event(ExecutionEvent::submit_result(Ok(())));
-                ExecutionResult::Done
+                ExecutionResult::Done(self.tx().hash())
             }
             Err(e) => {
-                let result = if e.needs_resubmission() {
-                    ExecutionResult::NeedsResubmit(self)
+                let result = if let Some(reason) = e.needs_resubmission() {
+                    ExecutionResult::NeedsResubmit(reason, self.tx().hash())
                 } else {
-                    ExecutionResult::Error
+                    ExecutionResult::Error(self.tx().hash())
                 };
                 log.push_event(ExecutionEvent::submit_result(Err(e)));
                 result
@@ -246,13 +292,10 @@ trait TxTask {
     }
 
     async fn execute(
-        self: Box<Self>,
+        self: Self,
         log: &dyn ExecutionLog<HashType = Self::HashType>,
         rpc: &dyn TransactionsSink<Self::HashType>,
-    ) -> ExecutionResult<Self::HashType>
-    where
-        Self: Sized + 'static,
-    {
+    ) -> ExecutionResult<Self::HashType> {
         if self.is_watched() {
             self.send_watched_tx(log, rpc).await
         } else {
@@ -261,47 +304,78 @@ trait TxTask {
     }
 }
 
+// pub trait TransactionsStore<H: BlockHash, T: Transaction<H>>: Sync {
+//     fn ready(&self) -> impl IntoIterator<Item = >;
+// }
+
 trait TxTaskStore {
     type HashType: BlockHash;
-    fn pop() -> Option<Box<dyn TxTask<HashType = Self::HashType>>>;
+    type Transaction: Transaction<HashType = Self::HashType>;
+    fn pop() -> Option<Self::Transaction>;
 }
 
-struct FakeTxTask {
-    tx: FakeTransaction,
-    watched: bool,
-}
+type FakeTxTask = DefaultTxTask<FakeTransaction>;
 
-impl FakeTxTask {
-    fn new_watched(tx: FakeTransaction) -> Self {
+impl<T: Transaction> DefaultTxTask<T> {
+    fn new_watched(tx: T) -> Self {
         Self { tx, watched: true }
     }
-    fn new_unwatched(tx: FakeTransaction) -> Self {
+    fn new_unwatched(tx: T) -> Self {
         Self { tx, watched: false }
     }
 }
 
 #[async_trait]
-impl TxTask for FakeTxTask {
-    type HashType = FakeHash;
-    fn tx(&self) -> &dyn Transaction<HashType = FakeHash> {
-        &self.tx
-    }
+pub trait ResubmissionQueue<T: TxTask>: Default + Sync {
+    fn resubmit(&self, hash: T::HashType, reason: ResubmitReason);
+    fn pop(&self) -> Option<T>;
+    async fn run(&self);
+}
 
-    fn is_watched(&self) -> bool {
-        self.watched
+struct DefaultResubmissionQueue<T: TxTask> {
+    resubmitted: Vec<T::HashType>,
+}
+
+impl<T: TxTask> Default for DefaultResubmissionQueue<T> {
+    fn default() -> Self {
+        Self {
+            resubmitted: Default::default(),
+        }
     }
 }
 
-struct Runner<H: BlockHash, T: TxTask<HashType = H>, Sink: TransactionsSink<H>> {
-    logs: HashMap<H, DefaultExecutionLog<H>>,
-    transactions: Vec<T>,
+#[async_trait]
+impl<T: TxTask> ResubmissionQueue<T> for DefaultResubmissionQueue<T> {
+    fn resubmit(&self, hash: T::HashType, reason: ResubmitReason) {
+        todo!()
+    }
+
+    fn pop(&self) -> Option<T> {
+        todo!()
+    }
+
+    async fn run(&self) {
+        loop {
+            tokio::time::sleep(Duration::from_millis(1000)).await;
+        }
+    }
+}
+type TxHash<T> = <<T as TxTask>::Transaction as Transaction>::HashType;
+struct Runner<T: TxTask, Sink: TransactionsSink<T::HashType>, Queue: ResubmissionQueue<T>> {
+    logs: HashMap<TxHash<T>, DefaultExecutionLog<T::HashType>>,
+    transactions: RwLock<Vec<T>>,
+    done: Vec<T::HashType>,
+    errors: Vec<T::HashType>,
     rpc: Sink,
+    resubmission_queue: Queue,
 }
 
-type FakeTxRunner = Runner<FakeHash, FakeTxTask, FakeTransactionSink>;
+// trait XXXX<H: BlockHash>: TxTask<HashType = H> + 'static + Sized {}
+// impl<T, H: BlockHash> XXXX<H> for T where T: TxTask<HashType = H> + 'static + Sized {}
+type FakeTxRunner = Runner<FakeTxTask, FakeTransactionSink, DefaultResubmissionQueue<FakeTxTask>>;
 
-impl<H: BlockHash, T: TxTask<HashType = H> + Send + 'static, Sink: TransactionsSink<H>>
-    Runner<H, T, Sink>
+impl<T: TxTask, Sink: TransactionsSink<T::HashType>, Queue: ResubmissionQueue<T>>
+    Runner<T, Sink, Queue>
 {
     fn new(rpc: Sink, transactions: Vec<T>) -> Self {
         let logs = transactions
@@ -309,19 +383,44 @@ impl<H: BlockHash, T: TxTask<HashType = H> + Send + 'static, Sink: TransactionsS
             .map(|t| (t.tx().hash(), DefaultExecutionLog::default()))
             .collect();
 
+        let resubmission_queue = Queue::default();
+
         Self {
             logs,
-            transactions,
+            transactions: transactions.into(),
             rpc,
+            resubmission_queue,
+            done: Default::default(),
+            errors: Default::default(),
         }
     }
+
+    fn pop(&self) -> Option<T> {
+        None
+        // self.transactions
+        //     .write()
+        //     .pop()
+        //     .and_then(|x| Some(Box::from(x)))
+        // self.resubmission_queue
+        //     .pop()
+        //     .or_else(|| Box::new(self.transactions.pop()))
+    }
+    // fn pop(&self) -> Option<Box<T>> {
+    //     self.transactions
+    //         .write()
+    //         .pop()
+    //         .and_then(|x| Some(Box::from(x)))
+    //     // self.resubmission_queue
+    //     //     .pop()
+    //     //     .or_else(|| Box::new(self.transactions.pop()))
+    // }
 
     pub async fn run_poc2(&mut self) {
         let mut workers = FuturesUnordered::new();
 
         let mut i = 0;
-        for _ in 0..15000 {
-            if let Some(t) = self.transactions.pop() {
+        for _ in 0..5 {
+            if let Some(t) = self.transactions.write().pop() {
                 let t = Box::new(t);
                 let log = &self.logs[&t.tx().hash()];
                 log.push_event(ExecutionEvent::popped());
@@ -334,17 +433,32 @@ impl<H: BlockHash, T: TxTask<HashType = H> + Send + 'static, Sink: TransactionsS
 
         loop {
             select! {
+                _ = self.resubmission_queue.run() => {
+                }
                 done = workers.next() => {
                     // info!(?done, workers_len=workers.len(), "DONE");
                     match done {
                         Some(result) => {
-                            if let Some(task) = self.transactions.pop() {
-                                let task = Box::from(task);
+                            let task = self.pop();
+                            if let Some(task) = task {
                                 let log = &self.logs[&task.tx().hash()];
                                 log.push_event(ExecutionEvent::popped());
                                 workers.push(task.execute(log, &self.rpc));
                             }
                             info!(?result, workers_len=workers.len(), "FINISHED");
+
+                            match result {
+                                ExecutionResult::NeedsResubmit(reason, t) => {
+                                    self.resubmission_queue.resubmit(t, reason);
+                                },
+                                ExecutionResult::Done(hash) => {
+                                    self.done.push(hash)
+                                },
+                                ExecutionResult::Error(hash) => {
+                                    self.errors.push(hash)
+                                }
+
+                            }
                         }
                         None => {
                             info!("done");
@@ -439,7 +553,7 @@ mod tests {
     use subxt::dynamic::Value;
     use subxt_signer::eth::dev;
     #[tokio::test]
-    async fn oh_god() {
+    async fn rrr() {
         init_logger();
 
         let rpc = FakeTransactionSink::new();
@@ -448,42 +562,22 @@ mod tests {
             // .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
             .collect::<Vec<_>>();
 
-        transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_invalid(
-            11u32, 300,
-        )));
-        transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_error(
-            12u32, 300,
-        )));
+        // transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_invalid(
+        //     11u32, 300,
+        // )));
+        // transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_error(
+        //     12u32, 300,
+        // )));
 
-        let mut r = Runner::new(rpc, transactions);
+        let mut r = Runner::<
+            DefaultTxTask<FakeTransaction>,
+            FakeTransactionSink,
+            DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
+        >::new(rpc, transactions);
         r.run_poc2().await;
     }
 
-    struct SubxtEthTxTask {
-        tx: TransactionEth,
-        watched: bool,
-    }
-
-    impl SubxtEthTxTask {
-        fn new_watched(tx: TransactionEth) -> Self {
-            Self { tx, watched: true }
-        }
-        fn new_unwatched(tx: TransactionEth) -> Self {
-            Self { tx, watched: false }
-        }
-    }
-
-    #[async_trait]
-    impl TxTask for SubxtEthTxTask {
-        type HashType = <EthRuntimeConfig as subxt::Config>::Hash;
-        fn tx(&self) -> &dyn Transaction<HashType = Self::HashType> {
-            &self.tx
-        }
-
-        fn is_watched(&self) -> bool {
-            self.watched
-        }
-    }
+    type SubxtEthTxTask = DefaultTxTask<TransactionEth>;
 
     fn xxx(api: &OnlineClient<EthRuntimeConfig>, nonce: u64) -> TransactionEth {
         let alith = dev::alith();
@@ -534,7 +628,11 @@ mod tests {
             // .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
             .collect::<Vec<_>>();
 
-        let mut r = Runner::new(rpc, transactions);
+        let mut r = Runner::<
+            DefaultTxTask<TransactionEth>,
+            TransactionsSinkSubxt<EthRuntimeConfig>,
+            DefaultResubmissionQueue<DefaultTxTask<TransactionEth>>,
+        >::new(rpc, transactions);
         r.run_poc2().await;
     }
 }
