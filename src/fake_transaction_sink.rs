@@ -1,4 +1,8 @@
-use super::fake_transaction::FakeHash;
+use self::error::Error;
+use self::fake_transaction::{FakeHash, FakeTransaction};
+use self::transaction::{
+    StreamOf, Transaction, TransactionStatus, TransactionStatusIsTerminal, TransactionsSink,
+};
 use super::*;
 
 pub struct FakeTransactionSink {

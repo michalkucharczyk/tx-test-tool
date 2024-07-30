@@ -1,5 +1,10 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use self::{
+    error::Error,
+    transaction::{ResubmitHandler, StreamOf, Transaction, TransactionStatus},
+};
+
 use super::*;
 
 pub type FakeHash = [u8; 4];
@@ -99,7 +104,7 @@ impl FakeTransaction {
 
     pub fn new_multiple(hash: u32, stream_def: Vec<EventsStreamDef>) -> Self {
         Self {
-            stream_def: stream_def,
+            stream_def,
             hash: hash.to_le_bytes(),
             current_stream_def: Default::default(),
         }
