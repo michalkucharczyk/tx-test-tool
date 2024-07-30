@@ -1,10 +1,3 @@
-//todo:
-#![allow(dead_code)]
-//todo:
-#![allow(unused_imports)]
-//todo:
-#![allow(unused_variables)]
-
 use crate::{
 	error::Error,
 	runner::TxTask,
@@ -116,7 +109,7 @@ impl<T: TxTask + 'static> ResubmissionQueue<T> for DefaultResubmissionQueue<T> {
 		self.waiting_queue.write().await.len() == 0 && self.ready_queue.write().is_empty()
 	}
 
-	async fn resubmit(&self, task: T, reason: ResubmitReason) {
+	async fn resubmit(&self, task: T, _reason: ResubmitReason) {
 		// todo!()
 		// task.resubmit()
 		// resubmitted.
@@ -125,6 +118,8 @@ impl<T: TxTask + 'static> ResubmissionQueue<T> for DefaultResubmissionQueue<T> {
 		info!(">>>> A PUSH {}", self.waiting_queue.write().await.len());
 	}
 
+	//this maybe shall return an error if tx cannot be resubmitted?
+	//and runner shall log the this event.
 	fn pop(&self) -> Option<T> {
 		self.ready_queue.write().pop()
 	}

@@ -1,35 +1,13 @@
-//todo:
-#![allow(dead_code)]
-//todo:
-#![allow(unused_imports)]
-//todo:
-#![allow(unused_variables)]
-
 use crate::{
-	error::Error,
 	execution_log::{DefaultExecutionLog, ExecutionEvent, ExecutionLog},
-	fake_transaction::{FakeHash, FakeTransaction},
+	fake_transaction::FakeTransaction,
 	fake_transaction_sink::FakeTransactionSink,
 	resubmission::{DefaultResubmissionQueue, NeedsResubmit, ResubmissionQueue, ResubmitReason},
-	transaction::{
-		ResubmitHandler, Transaction, TransactionStatus, TransactionStatusIsTerminal,
-		TransactionsSink,
-	},
+	transaction::{ResubmitHandler, Transaction, TransactionStatusIsTerminal, TransactionsSink},
 };
 use async_trait::async_trait;
-use futures::{future::join, stream::FuturesUnordered, StreamExt};
-use parking_lot::RwLock;
-use std::{
-	collections::HashMap,
-	future::IntoFuture,
-	marker::PhantomData,
-	pin::Pin,
-	sync::{
-		atomic::{AtomicBool, Ordering},
-		Arc,
-	},
-	time::Duration,
-};
+use futures::{stream::FuturesUnordered, StreamExt};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use subxt::config::BlockHash;
 use tokio::select;
 use tracing::info;
@@ -327,9 +305,13 @@ mod tests {
 		fake_transaction_sink::FakeTransactionSink,
 		init_logger,
 		runner::{DefaultResubmissionQueue, FakeTxTask},
+		subxt_api_connector,
 		subxt_transaction::{EthRuntimeConfig, TransactionEth, TransactionsSinkSubxt},
 	};
-	use subxt::{config::substrate::SubstrateExtrinsicParamsBuilder as Params, dynamic::Value};
+	use futures::future::join;
+	use subxt::{
+		config::substrate::SubstrateExtrinsicParamsBuilder as Params, dynamic::Value, OnlineClient,
+	};
 	use subxt_signer::eth::dev;
 
 	#[tokio::test]
@@ -353,65 +335,64 @@ mod tests {
 		>::new(rpc, transactions, queue.clone());
 		join(queue.run(), r.run_poc2()).await;
 	}
-	//
-	// type SubxtEthTxTask = DefaultTxTask<TransactionEth>;
-	//
-	// fn make_subxt_transaction(api: &OnlineClient<EthRuntimeConfig>, nonce: u64) -> TransactionEth
-	// {     let alith = dev::alith();
-	//     let baltathar = dev::baltathar();
-	//
-	//     let nonce = nonce;
-	//     let tx_params = Params::new().nonce(nonce).build();
-	//
-	//     // let tx_call = subxt::dynamic::tx("System", "remark",
-	// vec![Value::from_bytes("heeelooo")]);     let tx_call = subxt::dynamic::tx(
-	//         "Balances",
-	//         "transfer_keep_alive",
-	//         vec![
-	//             // // Substrate:
-	//             // Value::unnamed_variant("Id", [Value::from_bytes(receiver.public())]),
-	//             // Eth:
-	//             Value::unnamed_composite(vec![Value::from_bytes(alith.account_id())]),
-	//             Value::u128(1u32.into()),
-	//         ],
-	//     );
-	//
-	//     let tx: TransactionEth = api
-	//         .tx()
-	//         .create_signed_offline(&tx_call, &baltathar, tx_params)
-	//         .unwrap();
-	//
-	//     info!("tx hash: {:?}", tx.hash());
-	//
-	//     tx
-	// }
-	//
-	// #[tokio::test]
-	// async fn oh_god2() {
-	//     init_logger();
-	//
-	//     // let api = OnlineClient::<EthRuntimeConfig>::from_insecure_url("ws://127.0.0.1:9933")
-	//     //     .await
-	//     //     .unwrap();
-	//     let api = subxt_api_connector::connect("ws://127.0.0.1:9933")
-	//         .await
-	//         .unwrap();
-	//
-	//     let rpc = TransactionsSinkSubxt::<EthRuntimeConfig>::new();
-	//
-	//     let transactions = (0..300000)
-	//         .map(|i| SubxtEthTxTask::new_watched(make_subxt_transaction(&api, i + 60000)))
-	//         .rev()
-	//         // .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
-	//         .collect::<Vec<_>>();
-	//
-	//     let mut r = Runner::<
-	//         DefaultTxTask<TransactionEth>,
-	//         TransactionsSinkSubxt<EthRuntimeConfig>,
-	//         DefaultResubmissionQueue<DefaultTxTask<TransactionEth>>,
-	//     >::new(rpc, transactions);
-	//     r.run_poc2().await;
-	// }
+
+	type SubxtEthTxTask = DefaultTxTask<TransactionEth>;
+
+	fn make_subxt_transaction(api: &OnlineClient<EthRuntimeConfig>, nonce: u64) -> TransactionEth {
+		let alith = dev::alith();
+		let baltathar = dev::baltathar();
+
+		let nonce = nonce;
+		let tx_params = Params::new().nonce(nonce).build();
+
+		// let tx_call = subxt::dynamic::tx("System", "remark",
+		// vec![Value::from_bytes("heeelooo")]);
+
+		let tx_call = subxt::dynamic::tx(
+			"Balances",
+			"transfer_keep_alive",
+			vec![
+				// // Substrate:
+				// Value::unnamed_variant("Id", [Value::from_bytes(receiver.public())]),
+				// Eth:
+				Value::unnamed_composite(vec![Value::from_bytes(alith.account_id())]),
+				Value::u128(1u32.into()),
+			],
+		);
+
+		let tx: TransactionEth =
+			api.tx().create_signed_offline(&tx_call, &baltathar, tx_params).unwrap();
+
+		info!("tx hash: {:?}", tx.hash());
+
+		tx
+	}
+
+	#[tokio::test]
+	async fn oh_god2() {
+		init_logger();
+
+		// let api = OnlineClient::<EthRuntimeConfig>::from_insecure_url("ws://127.0.0.1:9933")
+		//     .await
+		//     .unwrap();
+		let api = subxt_api_connector::connect("ws://127.0.0.1:9933").await.unwrap();
+
+		let rpc = TransactionsSinkSubxt::<EthRuntimeConfig>::new();
+
+		let transactions = (0..300000)
+			.map(|i| SubxtEthTxTask::new_watched(make_subxt_transaction(&api, i + 60000)))
+			.rev()
+			// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
+			.collect::<Vec<_>>();
+
+		let queue = DefaultResubmissionQueue::default();
+		let mut r = Runner::<
+			DefaultTxTask<TransactionEth>,
+			TransactionsSinkSubxt<EthRuntimeConfig>,
+			DefaultResubmissionQueue<DefaultTxTask<TransactionEth>>,
+		>::new(rpc, transactions, queue);
+		r.run_poc2().await;
+	}
 
 	#[tokio::test]
 	async fn resubmit() {

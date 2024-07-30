@@ -1,22 +1,12 @@
-use self::{
+use crate::{
 	error::Error,
-	transaction::{Transaction, TransactionStatus, TransactionStatusIsTerminal, TransactionsSink},
+	transaction::{ResubmitHandler, Transaction, TransactionStatus, TransactionsSink},
 };
-
-use super::*;
-use std::{any::Any, marker::PhantomData, pin::Pin};
-
 use async_trait::async_trait;
-use futures::{FutureExt, StreamExt};
-use subxt::{
-	config::substrate::SubstrateExtrinsicParamsBuilder as Params,
-	dynamic::Value,
-	tx::{SubmittableExtrinsic, TxStatus},
-	OnlineClient, PolkadotConfig,
-};
-use subxt_core::config::BlockHash;
-use subxt_signer::eth::{dev, AccountId20, Keypair as EthKeypair, Signature};
-use tracing::info;
+use futures::StreamExt;
+use std::{any::Any, marker::PhantomData, pin::Pin};
+use subxt::{tx::SubmittableExtrinsic, OnlineClient, PolkadotConfig};
+use subxt_signer::eth::{AccountId20, Signature};
 
 pub enum EthRuntimeConfig {}
 impl subxt::Config for EthRuntimeConfig {
@@ -46,6 +36,13 @@ impl<C: subxt::Config> Transaction for TransactionSubxt<C> {
 	}
 	fn as_any(&self) -> &dyn Any {
 		self
+	}
+}
+
+impl<C: subxt::Config> ResubmitHandler for TransactionSubxt<C> {
+	fn handle_resubmit_request(self) -> Option<Self> {
+		//mortality check and re-signing
+		Some(self)
 	}
 }
 
@@ -94,43 +91,56 @@ impl<C: subxt::Config> TransactionsSink<<C as subxt::Config>::Hash> for Transact
 	}
 }
 
-#[tokio::test]
-async fn test_subxt_send() -> Result<(), Box<dyn std::error::Error>> {
-	init_logger();
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::init_logger;
+	use futures::StreamExt;
+	use subxt::{
+		config::substrate::SubstrateExtrinsicParamsBuilder as Params, dynamic::Value, OnlineClient,
+	};
+	use subxt_signer::eth::dev;
+	use tracing::info;
 
-	let api = OnlineClient::<EthRuntimeConfig>::from_insecure_url("ws://127.0.0.1:9933")
-		.await
-		.unwrap();
+	#[tokio::test]
+	async fn test_subxt_send() -> Result<(), Box<dyn std::error::Error>> {
+		init_logger();
 
-	let alith = dev::alith();
-	let baltathar = dev::baltathar();
+		let api = OnlineClient::<EthRuntimeConfig>::from_insecure_url("ws://127.0.0.1:9933")
+			.await
+			.unwrap();
 
-	let nonce = 0;
-	let tx_params = Params::new().nonce(nonce).build();
+		let alith = dev::alith();
+		let baltathar = dev::baltathar();
 
-	// let tx_call = subxt::dynamic::tx("System", "remark", vec![Value::from_bytes("heeelooo")]);
-	let tx_call = subxt::dynamic::tx(
-		"Balances",
-		"transfer_keep_alive",
-		vec![
-			// // Substrate:
-			// Value::unnamed_variant("Id", [Value::from_bytes(receiver.public())]),
-			// Eth:
-			Value::unnamed_composite(vec![Value::from_bytes(alith.account_id())]),
-			Value::u128(1u32.into()),
-		],
-	);
+		let nonce = 0;
+		let tx_params = Params::new().nonce(nonce).build();
 
-	let tx: TransactionSubxt<EthRuntimeConfig> =
-		api.tx().create_signed_offline(&tx_call, &baltathar, tx_params).unwrap();
+		// let tx_call = subxt::dynamic::tx("System", "remark",
+		// vec![Value::from_bytes("heeelooo")]);
+		let tx_call = subxt::dynamic::tx(
+			"Balances",
+			"transfer_keep_alive",
+			vec![
+				// // Substrate:
+				// Value::unnamed_variant("Id", [Value::from_bytes(receiver.public())]),
+				// Eth:
+				Value::unnamed_composite(vec![Value::from_bytes(alith.account_id())]),
+				Value::u128(1u32.into()),
+			],
+		);
 
-	info!("tx hash: {:?}", tx.hash());
+		let tx: TransactionSubxt<EthRuntimeConfig> =
+			api.tx().create_signed_offline(&tx_call, &baltathar, tx_params).unwrap();
 
-	let sink = TransactionsSinkSubxt::<EthRuntimeConfig>::new();
+		info!("tx hash: {:?}", tx.hash());
 
-	let tx: Box<dyn Transaction<HashType = <EthRuntimeConfig as subxt::Config>::Hash>> =
-		Box::from(tx);
-	let mut s = sink.submit_and_watch(&*tx).await.unwrap().map(|e| info!("event: {:?}", e));
-	while let Some(_) = s.next().await {}
-	Ok(())
+		let sink = TransactionsSinkSubxt::<EthRuntimeConfig>::new();
+
+		let tx: Box<dyn Transaction<HashType = <EthRuntimeConfig as subxt::Config>::Hash>> =
+			Box::from(tx);
+		let mut s = sink.submit_and_watch(&*tx).await.unwrap().map(|e| info!("event: {:?}", e));
+		while let Some(_) = s.next().await {}
+		Ok(())
+	}
 }
