@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use super::*;
 
 pub type FakeHash = [u8; 4];
@@ -65,7 +67,8 @@ impl From<Vec<EventDef>> for EventsStreamDef {
 
 pub struct FakeTransaction {
     hash: FakeHash,
-    stream_def: EventsStreamDef,
+    stream_def: Vec<EventsStreamDef>,
+    current_stream_def: AtomicUsize,
 }
 
 impl Transaction for FakeTransaction {
@@ -78,12 +81,53 @@ impl Transaction for FakeTransaction {
     }
 }
 
+impl ResubmitHandler for FakeTransaction {
+    fn handle_resubmit_request(self) -> Option<Self> {
+        self.current_stream_def.fetch_add(1, Ordering::Relaxed);
+        if self.current_stream_def.load(Ordering::Relaxed) < self.stream_def.len() {
+            Some(self)
+        } else {
+            None
+        }
+    }
+}
+
 impl FakeTransaction {
+    pub fn get_current_stream_def(&self) -> EventsStreamDef {
+        self.stream_def[self.current_stream_def.load(Ordering::Relaxed)].clone()
+    }
+
+    pub fn new_multiple(hash: u32, stream_def: Vec<EventsStreamDef>) -> Self {
+        Self {
+            stream_def: stream_def,
+            hash: hash.to_le_bytes(),
+            current_stream_def: Default::default(),
+        }
+    }
+
     pub fn new(hash: u32, stream_def: EventsStreamDef) -> Self {
         Self {
-            stream_def,
+            stream_def: vec![stream_def],
             hash: hash.to_le_bytes(),
+            current_stream_def: Default::default(),
         }
+    }
+
+    pub fn new_droppable_2nd_success(hash: u32, delay: u32) -> Self {
+        Self::new_multiple(
+            hash,
+            vec![
+                EventsStreamDef(vec![EventDef::dropped(delay)]),
+                EventsStreamDef(vec![
+                    EventDef::broadcasted(10, 3),
+                    EventDef::validated(10),
+                    EventDef::in_block(1, 10),
+                    EventDef::in_block(2, 10),
+                    EventDef::in_block(3, 10),
+                    EventDef::finalized(2, 10),
+                ]),
+            ],
+        )
     }
 
     pub fn new_droppable(hash: u32, delay: u32) -> Self {
@@ -127,7 +171,7 @@ impl FakeTransaction {
     }
 
     pub fn events(&self) -> StreamOf<TransactionStatus<FakeHash>> {
-        let def = self.stream_def.clone();
+        let def = self.get_current_stream_def();
         stream::unfold(def.0.into_iter(), move |mut i| async move {
             if let Some(EventDef { event, delay }) = i.next() {
                 tokio::time::sleep(Duration::from_millis(delay.into())).await;
@@ -142,8 +186,7 @@ impl FakeTransaction {
 
     pub async fn submit_result(&self) -> Result<FakeHash, Error> {
         let EventDef { event, delay } = self
-            .stream_def
-            .clone()
+            .get_current_stream_def()
             .0
             .pop()
             .expect("there shall be at least event. qed.");

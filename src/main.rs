@@ -29,6 +29,7 @@ trait TransactionStatusIsTerminal {
 mod fake_transaction;
 mod fake_transaction_sink;
 mod runner;
+mod subxt_api_connector;
 mod subxt_transaction;
 
 use fake_transaction::FakeTransaction;
@@ -93,17 +94,21 @@ impl<H: BlockHash> TransactionStatusIsTerminal for TransactionStatus<H> {
 //     Done,
 // }
 
-pub trait Transaction: Sync {
+pub trait Transaction: Send + Sync {
     type HashType: BlockHash;
     fn hash(&self) -> Self::HashType;
     fn as_any(&self) -> &dyn Any;
+}
+
+pub trait ResubmitHandler: Sized {
+    fn handle_resubmit_request(self) -> Option<Self>;
 }
 
 type StreamOf<I> = Pin<Box<dyn futures::Stream<Item = I> + Send>>;
 
 /// Abstraction for RPC client
 #[async_trait]
-pub trait TransactionsSink<H: BlockHash>: Sync {
+pub trait TransactionsSink<H: BlockHash>: Send + Sync {
     async fn submit_and_watch(
         &self,
         tx: &dyn Transaction<HashType = H>,
