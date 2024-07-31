@@ -102,18 +102,41 @@ impl FakeTransaction {
 		}
 	}
 
+	pub fn new_inblock_then_droppable_2nd_success(hash: u32, delay: u32) -> Self {
+		Self::new_multiple(
+			hash,
+			vec![
+				EventsStreamDef(vec![
+					EventDef::broadcasted(delay, 3),
+					EventDef::validated(delay),
+					EventDef::in_block(1, delay),
+					EventDef::in_block(2, delay),
+					EventDef::in_block(3, delay),
+					EventDef::dropped(delay),
+				]),
+				EventsStreamDef(vec![
+					EventDef::broadcasted(delay, 3),
+					EventDef::validated(delay),
+					EventDef::in_block(1, delay),
+					EventDef::in_block(2, delay),
+					EventDef::in_block(3, delay),
+					EventDef::finalized(2, delay),
+				]),
+			],
+		)
+	}
 	pub fn new_droppable_2nd_success(hash: u32, delay: u32) -> Self {
 		Self::new_multiple(
 			hash,
 			vec![
 				EventsStreamDef(vec![EventDef::dropped(delay)]),
 				EventsStreamDef(vec![
-					EventDef::broadcasted(10, 3),
-					EventDef::validated(10),
-					EventDef::in_block(1, 10),
-					EventDef::in_block(2, 10),
-					EventDef::in_block(3, 10),
-					EventDef::finalized(2, 10),
+					EventDef::broadcasted(delay, 3),
+					EventDef::validated(delay),
+					EventDef::in_block(1, delay),
+					EventDef::in_block(2, delay),
+					EventDef::in_block(3, delay),
+					EventDef::finalized(2, delay),
 				]),
 			],
 		)
@@ -132,15 +155,16 @@ impl FakeTransaction {
 	}
 
 	pub fn new_finalizable_quick(hash: u32) -> Self {
+		let delay = 0;
 		Self::new(
 			hash,
 			EventsStreamDef(vec![
-				EventDef::broadcasted(10, 3),
-				EventDef::validated(10),
-				EventDef::in_block(1, 10),
-				EventDef::in_block(2, 10),
-				EventDef::in_block(3, 10),
-				EventDef::finalized(2, 10),
+				EventDef::broadcasted(delay, 3),
+				EventDef::validated(delay),
+				EventDef::in_block(1, delay),
+				EventDef::in_block(2, delay),
+				EventDef::in_block(3, delay),
+				EventDef::finalized(2, delay),
 			]),
 		)
 	}
@@ -163,8 +187,10 @@ impl FakeTransaction {
 		let def = self.get_current_stream_def();
 		stream::unfold(def.0.into_iter(), move |mut i| async move {
 			if let Some(EventDef { event, delay }) = i.next() {
-				tokio::time::sleep(Duration::from_millis(delay.into())).await;
-				trace!(target:LOG_TARGET, "play: {event:?}");
+				if delay > 0 {
+					tokio::time::sleep(Duration::from_millis(delay.into())).await;
+				}
+				trace!(target:LOG_TARGET, ?event, ?delay, "play");
 				Some((event, i))
 			} else {
 				None
@@ -179,8 +205,10 @@ impl FakeTransaction {
 			.0
 			.pop()
 			.expect("there shall be at least event. qed.");
-		tokio::time::sleep(Duration::from_millis(delay.into())).await;
-		trace!("submit_result: delayed: {:?}", self.hash);
+		if delay > 0 {
+			tokio::time::sleep(Duration::from_millis(delay.into())).await;
+		}
+		trace!(target:LOG_TARGET, "submit_result: delayed: {:?}", self.hash);
 		match event {
 			TransactionStatus::Finalized(_) => Ok(self.hash),
 			TransactionStatus::Dropped(message) =>

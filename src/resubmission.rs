@@ -4,7 +4,7 @@ use crate::{
 	transaction::{Transaction, TransactionStatus},
 };
 use async_trait::async_trait;
-use futures::{stream::FuturesUnordered, StreamExt};
+use futures::{stream::FuturesUnordered, Future, StreamExt};
 use jsonrpsee::types::ErrorObject;
 use parking_lot::RwLock;
 use std::{
@@ -16,9 +16,11 @@ use std::{
 	time::Duration,
 };
 use subxt::config::BlockHash;
-use tracing::trace;
+use tokio::{sync::mpsc, task::yield_now};
+use tracing::{info, trace};
 
 const LOG_TARGET: &str = "resubmission";
+const DEFAULT_RESUBMIT_DELAY: u64 = 3000;
 
 #[derive(Debug)]
 pub enum ResubmitReason {
@@ -53,40 +55,111 @@ impl NeedsResubmit for Error {
 }
 
 #[async_trait]
-pub trait ResubmissionQueue<T: TxTask>: Default {
+pub trait ResubmissionQueue<T: TxTask> {
 	async fn resubmit(&self, hash: T, reason: ResubmitReason);
 	fn pop(&self) -> Option<T>;
-	async fn run(&self);
 	fn terminate(&self);
 	async fn is_empty(&self) -> bool;
 }
 
+pub type ResubmittedTxTask<T> = Pin<Box<dyn futures::Future<Output = Option<T>> + Sync + Send>>;
+use futures::FutureExt;
 pub struct DefaultResubmissionQueue<T: TxTask> {
-	waiting_queue: Arc<
-		tokio::sync::RwLock<
-			FuturesUnordered<Pin<Box<dyn futures::Future<Output = Option<T>> + Sync + Send>>>,
-		>,
-	>,
 	ready_queue: Arc<RwLock<Vec<T>>>,
 	terminate: Arc<AtomicBool>,
+	tx: mpsc::Sender<ResubmittedTxTask<T>>,
+	is_queue_empty: Arc<AtomicBool>,
 }
 
 impl<T: TxTask> Clone for DefaultResubmissionQueue<T> {
 	fn clone(&self) -> Self {
 		Self {
-			waiting_queue: self.waiting_queue.clone(),
 			ready_queue: self.ready_queue.clone(),
 			terminate: self.terminate.clone(),
+			is_queue_empty: self.is_queue_empty.clone(),
+			tx: self.tx.clone(),
 		}
 	}
 }
+pub type ResubmissionQueueTask = Pin<Box<dyn Future<Output = ()> + Send>>;
+const CHANNEL_CAPACITY: usize = 100_000;
 
-impl<T: TxTask> Default for DefaultResubmissionQueue<T> {
-	fn default() -> Self {
-		Self {
-			waiting_queue: Default::default(),
+impl<T: TxTask + 'static> DefaultResubmissionQueue<T> {
+	pub fn new() -> (Self, ResubmissionQueueTask) {
+		let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
+		let s = Self {
 			ready_queue: Default::default(),
 			terminate: AtomicBool::new(false).into(),
+			is_queue_empty: AtomicBool::new(true).into(),
+			tx,
+		};
+		(s.clone(), s.run(rx).boxed())
+	}
+
+	#[allow(dead_code)]
+	async fn run_naive(self, mut rx: mpsc::Receiver<ResubmittedTxTask<T>>) {
+		let mut waiting_queue = FuturesUnordered::<ResubmittedTxTask<T>>::default();
+		loop {
+			trace!(target: LOG_TARGET, "B RUN ");
+			while let Ok(pending) = rx.try_recv() {
+				waiting_queue.push(pending);
+			}
+			trace!(target: LOG_TARGET, "M RUN ");
+			let len = waiting_queue.len();
+			trace!(target: LOG_TARGET, "A RUN {}", len);
+			if len == 0 {
+				self.is_queue_empty.store(true, Ordering::Relaxed);
+				if self.terminate.load(Ordering::Relaxed) {
+					return;
+				}
+				tracing::info!(target: LOG_TARGET, "WAIT");
+				tokio::time::sleep(Duration::from_millis(100)).await;
+			} else {
+				self.is_queue_empty.store(false, Ordering::Relaxed);
+				let task = {
+					trace!(target: LOG_TARGET, "B RUN-QUEUE {}", waiting_queue.len());
+					waiting_queue.next().await
+				};
+				if let Some(t) = task {
+					if let Some(t) = t {
+						trace!(target: LOG_TARGET, "M RUN-QUEUE {:?}", t.tx().hash());
+						self.ready_queue.write().push(t)
+					}
+				}
+				trace!(target: LOG_TARGET, "A RUN-QUEUE");
+			}
+		}
+	}
+
+	async fn run(self, mut rx: mpsc::Receiver<ResubmittedTxTask<T>>) {
+		let mut waiting_queue = FuturesUnordered::<ResubmittedTxTask<T>>::default();
+		loop {
+			let len = waiting_queue.len();
+			trace!(target: LOG_TARGET, "B RUN {}", len);
+			if len == 0 {
+				self.is_queue_empty.store(true, Ordering::Relaxed);
+				if self.terminate.load(Ordering::Relaxed) {
+					return;
+				}
+				yield_now().await;
+			}
+			tokio::select! {
+				task = waiting_queue.next() => {
+					if let Some(t) = task {
+						if let Some(t) = t {
+							trace!(target: LOG_TARGET, "M RUN-QUEUE {:?}", t.tx().hash());
+							self.ready_queue.write().push(t)
+						}
+					}
+				}
+				pending = rx.recv() => {
+					if let Some(pending) = pending {
+						self.is_queue_empty.store(false, Ordering::Relaxed);
+						waiting_queue.push(pending);
+					}
+				}
+			}
+			trace!(target: LOG_TARGET, "A RUN-QUEUE");
 		}
 	}
 }
@@ -94,7 +167,7 @@ impl<T: TxTask> Default for DefaultResubmissionQueue<T> {
 impl<T: TxTask> DefaultResubmissionQueue<T> {
 	async fn wait(t: T) -> Option<T> {
 		trace!(target: LOG_TARGET, "B wait {:?}", t.tx().hash());
-		tokio::time::sleep(Duration::from_millis(3000)).await;
+		tokio::time::sleep(Duration::from_millis(DEFAULT_RESUBMIT_DELAY)).await;
 		trace!(target: LOG_TARGET, "A wait {:?}", t.tx().hash());
 		t.handle_resubmit_request()
 	}
@@ -108,16 +181,22 @@ impl<T: TxTask + 'static> ResubmissionQueue<T> for DefaultResubmissionQueue<T> {
 	}
 
 	async fn is_empty(&self) -> bool {
-		self.waiting_queue.write().await.len() == 0 && self.ready_queue.write().is_empty()
+		trace!(
+			target:LOG_TARGET,
+			is_queue_empty = self.is_queue_empty.load(Ordering::Relaxed),
+			ready_queue_empty = self.ready_queue.write().is_empty(),
+			channel_empty = self.tx.capacity() == CHANNEL_CAPACITY,
+			"is_empty"
+		);
+		self.is_queue_empty.load(Ordering::Relaxed) &&
+			self.ready_queue.write().is_empty() &&
+			self.tx.capacity() == CHANNEL_CAPACITY
 	}
 
 	async fn resubmit(&self, task: T, _reason: ResubmitReason) {
-		// todo!()
-		// task.resubmit()
-		// resubmitted.
-		trace!(target: LOG_TARGET, "B PUSH {}", self.waiting_queue.write().await.len());
-		self.waiting_queue.read().await.push(Box::pin(Self::wait(task)));
-		trace!(target: LOG_TARGET, "A PUSH {}", self.waiting_queue.write().await.len());
+		trace!(target: LOG_TARGET, "B PUSH {:?}", task.tx().hash());
+		self.tx.send(Box::pin(Self::wait(task))).await.expect("send shall not fail");
+		trace!(target: LOG_TARGET, "A PUSH");
 	}
 
 	//this maybe shall return an error if tx cannot be resubmitted?
@@ -125,37 +204,35 @@ impl<T: TxTask + 'static> ResubmissionQueue<T> for DefaultResubmissionQueue<T> {
 	fn pop(&self) -> Option<T> {
 		trace!(target: LOG_TARGET, "B POP");
 		let r = self.ready_queue.write().pop();
-		trace!(target: LOG_TARGET, "A POP");
+		trace!(target: LOG_TARGET, "A POP {}", r.is_some());
 		r
 	}
+}
 
-	async fn run(&self) {
-		loop {
-			trace!(target: LOG_TARGET, "B RUN ");
-			let len = {
-				let q = self.waiting_queue.write().await;
-				q.len()
-			};
-			trace!(target: LOG_TARGET, "A RUN {}", len);
-			if len == 0 {
-				if self.terminate.load(Ordering::Relaxed) {
-					return;
-				}
-				tokio::time::sleep(Duration::from_millis(100)).await;
-			} else {
-				let task = {
-					let mut q = self.waiting_queue.write().await;
-					trace!(target: LOG_TARGET, "B RUN-QUEUE {}", q.len());
-					q.next().await
-				};
-				if let Some(t) = task {
-					if let Some(t) = t {
-						// trace!(target: LOG_TARGET, "RUN-QUEUE {:?}", t.tx().hash());
-						self.ready_queue.write().push(t)
-					}
-				}
-				trace!(target: LOG_TARGET, "A RUN-QUEUE");
-			}
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::init_logger;
+	use tracing::info;
+
+	async fn waitx(i: u32) -> u32 {
+		info!(target:LOG_TARGET, "before {}", i);
+		tokio::time::sleep(Duration::from_secs(3)).await;
+		info!(target:LOG_TARGET, "after {}", i);
+		i
+	}
+
+	pub type Task = Pin<Box<dyn futures::Future<Output = u32> + Sync + Send>>;
+
+	#[tokio::test]
+	async fn resubmit() {
+		init_logger();
+
+		let mut q: FuturesUnordered<Task> = Default::default();
+		(0..100_000).for_each(|i| q.push(Box::pin(waitx(i))));
+
+		while let Some(i) = q.next().await {
+			info!("done: {}", i);
 		}
 	}
 }

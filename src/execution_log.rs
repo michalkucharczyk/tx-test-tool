@@ -11,6 +11,7 @@ use subxt::config::BlockHash;
 use tracing::{info, trace};
 
 pub const STAT_TARGET: &str = "stat";
+pub const LOG_TARGET: &str = "execution_log";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ExecutionEvent<H> {
@@ -121,8 +122,9 @@ impl<H: BlockHash> ExecutionLog for DefaultExecutionLog<H> {
 	type HashType = H;
 
 	fn push_event(&self, event: ExecutionEvent<Self::HashType>) {
-		trace!(?event, "push_event:");
+		trace!(target:LOG_TARGET, ?event, "B push_event");
 		self.events.write().push(event);
+		trace!(target:LOG_TARGET, "A push_event");
 	}
 
 	// all methods used for generating stats:

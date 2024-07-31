@@ -10,7 +10,7 @@ use futures::{stream::FuturesUnordered, StreamExt};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use subxt::config::BlockHash;
 use tokio::select;
-use tracing::info;
+use tracing::{info, trace};
 
 const LOG_TARGET: &str = "runner";
 
@@ -25,7 +25,7 @@ impl<T: TxTask> std::fmt::Debug for ExecutionResult<T> {
 		match self {
 			Self::NeedsResubmit(r, t) => write!(f, "NeedsResubmit {r:?} {:?}", t.tx().hash()),
 			Self::Error(h) => write!(f, "Error {h:?}"),
-			Self::Done(h) => write!(f, "Doneh {h:?}"),
+			Self::Done(h) => write!(f, "Done {h:?}"),
 		}
 	}
 }
@@ -256,7 +256,6 @@ where
 		loop {
 			select! {
 				done = workers.next() => {
-					// info!(?done, workers_len=workers.len(), "DONE");
 					match done {
 						Some(result) => {
 							let task = self.pop();
@@ -284,10 +283,11 @@ where
 							}
 						}
 						None => {
-							tokio::time::sleep(Duration::from_millis(1000)).await;
+							trace!(target:LOG_TARGET,"all futures done");
+							tokio::time::sleep(Duration::from_millis(100)).await;
 							self.resubmission_queue.terminate();
-							info!("done");
 							if self.resubmission_queue.is_empty().await {
+								info!(target:LOG_TARGET,"done");
 								break;
 							}
 							let task = self.pop();
@@ -323,6 +323,7 @@ mod tests {
 		config::substrate::SubstrateExtrinsicParamsBuilder as Params, dynamic::Value, OnlineClient,
 	};
 	use subxt_signer::eth::dev;
+	use tracing::trace;
 
 	#[tokio::test]
 	async fn oh_god() {
@@ -339,13 +340,14 @@ mod tests {
 		transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_invalid(11u32, 300)));
 		transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_error(12u32, 300)));
 
-		let queue = DefaultResubmissionQueue::default();
+		let (queue, queue_task) = DefaultResubmissionQueue::new();
+
 		let mut r = Runner::<
 			DefaultTxTask<FakeTransaction>,
 			FakeTransactionSink,
 			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
-		>::new(5, rpc, transactions, queue.clone());
-		join(queue.run(), r.run_poc2()).await;
+		>::new(5, rpc, transactions, queue);
+		join(queue_task, r.run_poc2()).await;
 	}
 
 	type SubxtEthTxTask = DefaultTxTask<TransactionEth>;
@@ -375,7 +377,7 @@ mod tests {
 		let tx: TransactionEth =
 			api.tx().create_signed_offline(&tx_call, &baltathar, tx_params).unwrap();
 
-		info!("tx hash: {:?}", tx.hash());
+		trace!(target:LOG_TARGET,"tx hash: {:?}", tx.hash());
 
 		tx
 	}
@@ -397,7 +399,8 @@ mod tests {
 			// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
 			.collect::<Vec<_>>();
 
-		let queue = DefaultResubmissionQueue::default();
+		let (queue, queue_task) = DefaultResubmissionQueue::new();
+
 		let mut r = Runner::<
 			DefaultTxTask<TransactionEth>,
 			TransactionsSinkSubxt<EthRuntimeConfig>,
@@ -411,18 +414,18 @@ mod tests {
 		init_logger();
 
 		let rpc = FakeTransactionSink::new();
-		let transactions = (0..10)
-			.map(|i| FakeTxTask::new_watched(FakeTransaction::new_droppable_2nd_success(i, 500)))
+		let transactions = (0..100000)
+			.map(|i| FakeTxTask::new_watched(FakeTransaction::new_droppable_2nd_success(i, 0)))
 			// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
 			.collect::<Vec<_>>();
 
-		let queue = DefaultResubmissionQueue::default();
+		let (queue, queue_task) = DefaultResubmissionQueue::new();
 
 		let mut r = Runner::<
 			DefaultTxTask<FakeTransaction>,
 			FakeTransactionSink,
 			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
-		>::new(2, rpc, transactions, queue.clone());
-		join(queue.run(), r.run_poc2()).await;
+		>::new(100000, rpc, transactions, queue);
+		join(queue_task, r.run_poc2()).await;
 	}
 }
