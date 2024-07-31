@@ -9,7 +9,9 @@ use std::{
 	sync::atomic::{AtomicUsize, Ordering},
 	time::Duration,
 };
-use tracing::info;
+use tracing::trace;
+
+const LOG_TARGET: &str = "fake_tx";
 
 pub type FakeHash = [u8; 4];
 
@@ -162,7 +164,7 @@ impl FakeTransaction {
 		stream::unfold(def.0.into_iter(), move |mut i| async move {
 			if let Some(EventDef { event, delay }) = i.next() {
 				tokio::time::sleep(Duration::from_millis(delay.into())).await;
-				info!("play: {event:?}");
+				trace!(target:LOG_TARGET, "play: {event:?}");
 				Some((event, i))
 			} else {
 				None
@@ -178,7 +180,7 @@ impl FakeTransaction {
 			.pop()
 			.expect("there shall be at least event. qed.");
 		tokio::time::sleep(Duration::from_millis(delay.into())).await;
-		info!("submit_result: delayed: {:?}", self.hash);
+		trace!("submit_result: delayed: {:?}", self.hash);
 		match event {
 			TransactionStatus::Finalized(_) => Ok(self.hash),
 			TransactionStatus::Dropped(message) =>
@@ -226,6 +228,6 @@ mod test {
 				TransactionStatus::Finalized(2u32.to_le_bytes())
 			]
 		);
-		info!("{v:?}")
+		tracing::info!("{v:?}")
 	}
 }

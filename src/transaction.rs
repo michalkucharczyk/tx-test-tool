@@ -1,5 +1,6 @@
 use crate::error::Error;
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::{any::Any, pin::Pin};
 use subxt::{config::BlockHash, tx::TxStatus, OnlineClient};
 
@@ -9,8 +10,8 @@ pub trait TransactionStatusIsTerminal {
 	fn is_error(&self) -> bool;
 }
 
-#[derive(Debug, PartialEq, Clone)]
-pub enum TransactionStatus<H: BlockHash> {
+#[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
+pub enum TransactionStatus<H> {
 	Validated,
 	Broadcasted(u32),
 	InBlock(H),
@@ -20,6 +21,8 @@ pub enum TransactionStatus<H: BlockHash> {
 	Invalid(String),
 	Error(String),
 }
+
+impl<H: BlockHash + std::fmt::Debug> TransactionStatus<H> {}
 
 impl<C: subxt::Config> From<TxStatus<C, OnlineClient<C>>> for TransactionStatus<C::Hash> {
 	fn from(value: TxStatus<C, OnlineClient<C>>) -> Self {

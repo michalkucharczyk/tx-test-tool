@@ -57,6 +57,8 @@ impl TransactionsSink<FakeHash> for FakeTransactionSink {
 
 #[cfg(test)]
 mod test {
+	use std::time::Duration;
+
 	use super::*;
 	use crate::{fake_transaction::EventDef, init_logger};
 	use futures::future::join3;

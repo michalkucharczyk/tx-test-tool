@@ -1,5 +1,5 @@
 use crate::{
-	execution_log::{DefaultExecutionLog, ExecutionEvent, ExecutionLog},
+	execution_log::{make_stats, DefaultExecutionLog, ExecutionEvent, ExecutionLog},
 	fake_transaction::FakeTransaction,
 	fake_transaction_sink::FakeTransactionSink,
 	resubmission::{DefaultResubmissionQueue, NeedsResubmit, ResubmissionQueue, ResubmitReason},
@@ -11,6 +11,8 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use subxt::config::BlockHash;
 use tokio::select;
 use tracing::info;
+
+const LOG_TARGET: &str = "runner";
 
 pub enum ExecutionResult<T: TxTask> {
 	NeedsResubmit(ResubmitReason, T),
@@ -100,7 +102,7 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 			Ok(mut stream) => {
 				log.push_event(ExecutionEvent::submit_and_watch_result(Ok(())));
 				while let Some(status) = stream.next().await {
-					info!("{status:?}");
+					// info!("{status:?}");
 					log.push_event(status.clone().into());
 					if status.is_finalized() {
 						return ExecutionResult::Done(self.tx().hash());
@@ -135,6 +137,7 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 		match rpc.submit(self.tx()).await {
 			Ok(_) => {
 				log.push_event(ExecutionEvent::submit_result(Ok(())));
+				//todo: block monitor await here (with some global (cli-provided) timeout)
 				ExecutionResult::Done(self.tx().hash())
 			},
 			Err(e) => {
@@ -185,6 +188,7 @@ impl<T: Transaction> DefaultTxTask<T> {
 
 type TxHash<T> = <<T as TxTask>::Transaction as Transaction>::HashType;
 struct Runner<T: TxTask, Sink: TransactionsSink<T::HashType>, Queue: ResubmissionQueue<T>> {
+	initial_tasks: usize,
 	logs: HashMap<TxHash<T>, Arc<DefaultExecutionLog<T::HashType>>>,
 	transactions: Vec<T>,
 	done: Vec<TxHash<T>>,
@@ -202,13 +206,19 @@ where
 	Sink: TransactionsSink<T::HashType> + 'static,
 	<T as TxTask>::HashType: 'static,
 {
-	fn new(rpc: Sink, transactions: Vec<T>, resubmission_queue: Queue) -> Self {
+	fn new(
+		initial_tasks: usize,
+		rpc: Sink,
+		transactions: Vec<T>,
+		resubmission_queue: Queue,
+	) -> Self {
 		let logs = transactions
 			.iter()
 			.map(|t| (t.tx().hash(), DefaultExecutionLog::default().into()))
 			.collect();
 
 		Self {
+			initial_tasks,
 			logs,
 			transactions: transactions.into(),
 			rpc: rpc.into(),
@@ -230,7 +240,7 @@ where
 		let mut workers = FuturesUnordered::new();
 
 		let mut i = 0;
-		for _ in 0..5 {
+		for _ in 0..self.initial_tasks {
 			if let Some(t) = self.transactions.pop() {
 				let t = Box::new(t);
 				let log = self.logs[&t.tx().hash()].clone();
@@ -249,18 +259,19 @@ where
 					// info!(?done, workers_len=workers.len(), "DONE");
 					match done {
 						Some(result) => {
-							let task = {
-								self.pop()
-							};
+							let task = self.pop();
+
 							if let Some(task) = task {
 								let log = self.logs[&task.tx().hash()].clone();
 								log.push_event(ExecutionEvent::popped());
 								workers.push(task.execute(log, self.rpc.clone()));
 							}
-							info!(?result, workers_len=workers.len(), "FINISHED");
+							info!(target:LOG_TARGET,?result, workers_len=workers.len(), "FINISHED");
 
 							match result {
 								ExecutionResult::NeedsResubmit(reason, t) => {
+								let log = self.logs[&t.tx().hash()].clone();
+									log.push_event(ExecutionEvent::resubmitted());
 									self.resubmission_queue.resubmit(t, reason).await;
 								},
 								ExecutionResult::Done(hash) => {
@@ -279,9 +290,7 @@ where
 							if self.resubmission_queue.is_empty().await {
 								break;
 							}
-							let task = {
-								self.pop()
-							};
+							let task = self.pop();
 							if let Some(task) = task {
 								let log = self.logs[&task.tx().hash()].clone();
 								log.push_event(ExecutionEvent::popped());
@@ -293,7 +302,8 @@ where
 				}
 			}
 		}
-		info!("logs {:#?}", self.logs);
+		// info!("logs {:#?}", self.logs);
+		make_stats(self.logs.values().cloned())
 	}
 }
 
@@ -324,6 +334,8 @@ mod tests {
 			// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
 			.collect::<Vec<_>>();
 
+		transactions.push(FakeTxTask::new_watched(FakeTransaction::new_droppable(11u32, 300)));
+		transactions.push(FakeTxTask::new_watched(FakeTransaction::new_invalid(11u32, 300)));
 		transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_invalid(11u32, 300)));
 		transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_error(12u32, 300)));
 
@@ -332,7 +344,7 @@ mod tests {
 			DefaultTxTask<FakeTransaction>,
 			FakeTransactionSink,
 			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
-		>::new(rpc, transactions, queue.clone());
+		>::new(5, rpc, transactions, queue.clone());
 		join(queue.run(), r.run_poc2()).await;
 	}
 
@@ -379,8 +391,8 @@ mod tests {
 
 		let rpc = TransactionsSinkSubxt::<EthRuntimeConfig>::new();
 
-		let transactions = (0..300000)
-			.map(|i| SubxtEthTxTask::new_watched(make_subxt_transaction(&api, i + 60000)))
+		let transactions = (0..3000)
+			.map(|i| SubxtEthTxTask::new_watched(make_subxt_transaction(&api, i + 13000)))
 			.rev()
 			// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
 			.collect::<Vec<_>>();
@@ -390,7 +402,7 @@ mod tests {
 			DefaultTxTask<TransactionEth>,
 			TransactionsSinkSubxt<EthRuntimeConfig>,
 			DefaultResubmissionQueue<DefaultTxTask<TransactionEth>>,
-		>::new(rpc, transactions, queue);
+		>::new(10_000, rpc, transactions, queue);
 		r.run_poc2().await;
 	}
 
@@ -400,7 +412,7 @@ mod tests {
 
 		let rpc = FakeTransactionSink::new();
 		let transactions = (0..10)
-			.map(|i| FakeTxTask::new_watched(FakeTransaction::new_droppable_2nd_success(i, i * 5)))
+			.map(|i| FakeTxTask::new_watched(FakeTransaction::new_droppable_2nd_success(i, 500)))
 			// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
 			.collect::<Vec<_>>();
 
@@ -410,7 +422,7 @@ mod tests {
 			DefaultTxTask<FakeTransaction>,
 			FakeTransactionSink,
 			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
-		>::new(rpc, transactions, queue.clone());
+		>::new(2, rpc, transactions, queue.clone());
 		join(queue.run(), r.run_poc2()).await;
 	}
 }
