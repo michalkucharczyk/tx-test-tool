@@ -1,5 +1,7 @@
 use crate::{
-	execution_log::{make_stats, DefaultExecutionLog, ExecutionEvent, ExecutionLog},
+	execution_log::{
+		journal::Journal, make_stats, DefaultExecutionLog, ExecutionEvent, ExecutionLog, Logs,
+	},
 	fake_transaction::FakeTransaction,
 	fake_transaction_sink::FakeTransactionSink,
 	resubmission::{DefaultResubmissionQueue, NeedsResubmit, ResubmissionQueue, ResubmitReason},
@@ -7,7 +9,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use futures::{stream::FuturesUnordered, StreamExt};
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use subxt::config::BlockHash;
 use tokio::select;
 use tracing::{info, trace};
@@ -32,6 +34,7 @@ impl<T: TxTask> std::fmt::Debug for ExecutionResult<T> {
 
 #[async_trait]
 pub trait TxTask: Send + Sync + Sized {
+	//todo:remove
 	type HashType: BlockHash + 'static;
 	type Transaction: Transaction + ResubmitHandler;
 
@@ -40,24 +43,26 @@ pub trait TxTask: Send + Sync + Sized {
 
 	async fn send_watched_tx(
 		self: Self,
-		log: Arc<dyn ExecutionLog<HashType = Self::HashType>>,
+		log: Arc<dyn ExecutionLog<HashType = TxHash<Self>>>,
 		rpc: Arc<dyn TransactionsSink<Self::HashType>>,
 	) -> ExecutionResult<Self>;
 
 	async fn send_tx(
 		self: Self,
-		log: Arc<dyn ExecutionLog<HashType = Self::HashType>>,
+		log: Arc<dyn ExecutionLog<HashType = TxHash<Self>>>,
 		rpc: Arc<dyn TransactionsSink<Self::HashType>>,
 	) -> ExecutionResult<Self>;
 
 	async fn execute(
 		self: Self,
-		log: Arc<dyn ExecutionLog<HashType = Self::HashType>>,
+		log: Arc<dyn ExecutionLog<HashType = TxHash<Self>>>,
 		rpc: Arc<dyn TransactionsSink<Self::HashType>>,
 	) -> ExecutionResult<Self>;
 
 	fn handle_resubmit_request(self) -> Option<Self>;
 }
+
+pub type TxHash<T> = <<T as TxTask>::Transaction as Transaction>::HashType;
 
 struct DefaultTxTask<T>
 where
@@ -186,10 +191,9 @@ impl<T: Transaction> DefaultTxTask<T> {
 	}
 }
 
-type TxHash<T> = <<T as TxTask>::Transaction as Transaction>::HashType;
 struct Runner<T: TxTask, Sink: TransactionsSink<T::HashType>, Queue: ResubmissionQueue<T>> {
 	initial_tasks: usize,
-	logs: HashMap<TxHash<T>, Arc<DefaultExecutionLog<T::HashType>>>,
+	logs: Logs<T>,
 	transactions: Vec<T>,
 	done: Vec<TxHash<T>>,
 	errors: Vec<TxHash<T>>,
@@ -197,8 +201,6 @@ struct Runner<T: TxTask, Sink: TransactionsSink<T::HashType>, Queue: Resubmissio
 	resubmission_queue: Queue,
 }
 
-// trait XXXX<H: BlockHash>: TxTask<HashType = H> + 'static + Sized {}
-// impl<T, H: BlockHash> XXXX<H> for T where T: TxTask<HashType = H> + 'static + Sized {}
 type FakeTxRunner = Runner<FakeTxTask, FakeTransactionSink, DefaultResubmissionQueue<FakeTxTask>>;
 
 impl<T: TxTask, Sink, Queue: ResubmissionQueue<T>> Runner<T, Sink, Queue>
@@ -214,7 +216,7 @@ where
 	) -> Self {
 		let logs = transactions
 			.iter()
-			.map(|t| (t.tx().hash(), DefaultExecutionLog::default().into()))
+			.map(|t| (t.tx().hash(), Arc::new(DefaultExecutionLog::new_with_tx(t.tx()))))
 			.collect();
 
 		Self {
@@ -245,7 +247,6 @@ where
 				let t = Box::new(t);
 				let log = self.logs[&t.tx().hash()].clone();
 				log.push_event(ExecutionEvent::popped());
-				// let log: Arc<dyn ExecutionLog<HashType = T::HashType>> = log;
 				workers.push(t.execute(log, self.rpc.clone()));
 				i = i + 1;
 			} else {
@@ -302,7 +303,9 @@ where
 				}
 			}
 		}
+
 		// info!("logs {:#?}", self.logs);
+		Journal::<T>::save_logs(self.logs.clone());
 		make_stats(self.logs.values().cloned())
 	}
 }
@@ -317,6 +320,7 @@ mod tests {
 		runner::{DefaultResubmissionQueue, FakeTxTask},
 		subxt_api_connector,
 		subxt_transaction::{EthRuntimeConfig, TransactionEth, TransactionsSinkSubxt},
+		transaction::AccountMetadata,
 	};
 	use futures::future::join;
 	use subxt::{
@@ -374,8 +378,11 @@ mod tests {
 			],
 		);
 
-		let tx: TransactionEth =
-			api.tx().create_signed_offline(&tx_call, &baltathar, tx_params).unwrap();
+		let tx = TransactionEth::new(
+			api.tx().create_signed_offline(&tx_call, &baltathar, tx_params).unwrap(),
+			nonce as u128,
+			AccountMetadata::KeyRing("baltathar".to_string()),
+		);
 
 		trace!(target:LOG_TARGET,"tx hash: {:?}", tx.hash());
 
@@ -394,7 +401,7 @@ mod tests {
 		let rpc = TransactionsSinkSubxt::<EthRuntimeConfig>::new();
 
 		let transactions = (0..3000)
-			.map(|i| SubxtEthTxTask::new_watched(make_subxt_transaction(&api, i + 13000)))
+			.map(|i| SubxtEthTxTask::new_watched(make_subxt_transaction(&api, i + 16000)))
 			.rev()
 			// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
 			.collect::<Vec<_>>();
@@ -406,7 +413,7 @@ mod tests {
 			TransactionsSinkSubxt<EthRuntimeConfig>,
 			DefaultResubmissionQueue<DefaultTxTask<TransactionEth>>,
 		>::new(10_000, rpc, transactions, queue);
-		r.run_poc2().await;
+		join(queue_task, r.run_poc2()).await;
 	}
 
 	#[tokio::test]
@@ -427,5 +434,12 @@ mod tests {
 			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
 		>::new(100000, rpc, transactions, queue);
 		join(queue_task, r.run_poc2()).await;
+	}
+
+	#[tokio::test]
+	async fn read_json() {
+		init_logger();
+		let logs = Journal::<DefaultTxTask<FakeTransaction>>::load_logs("out_20240801_164155.json");
+		make_stats(logs.values().cloned());
 	}
 }

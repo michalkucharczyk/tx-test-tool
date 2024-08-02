@@ -80,10 +80,10 @@ mod test {
 			vec![
 				TransactionStatus::Broadcasted(3),
 				TransactionStatus::Validated,
-				TransactionStatus::InBlock(1u32.to_le_bytes()),
-				TransactionStatus::InBlock(2u32.to_le_bytes()),
-				TransactionStatus::InBlock(3u32.to_le_bytes()),
-				TransactionStatus::Finalized(2u32.to_le_bytes())
+				TransactionStatus::InBlock(1u32.to_le_bytes().into()),
+				TransactionStatus::InBlock(2u32.to_le_bytes().into()),
+				TransactionStatus::InBlock(3u32.to_le_bytes().into()),
+				TransactionStatus::Finalized(2u32.to_le_bytes().into())
 			]
 		);
 	}
@@ -121,7 +121,7 @@ mod test {
 		let t = FakeTransaction::new_finalizable_quick(111);
 		let t: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t);
 		let r = rpc.submit(&*t).await.unwrap();
-		assert_eq!(r, 111u32.to_le_bytes());
+		assert_eq!(r, 111u32.to_le_bytes().into());
 	}
 
 	#[tokio::test]
@@ -144,8 +144,8 @@ mod test {
 		let r2 = result.1;
 		assert_eq!(result.2, 2);
 		assert_eq!(rpc.count(), 0);
-		assert_eq!(r1.unwrap(), 111u32.to_le_bytes());
-		assert_eq!(r2.unwrap(), 222u32.to_le_bytes());
+		assert_eq!(r1.unwrap(), 111u32.to_le_bytes().into());
+		assert_eq!(r2.unwrap(), 222u32.to_le_bytes().into());
 	}
 
 	//todo: submit_and_watch can return error

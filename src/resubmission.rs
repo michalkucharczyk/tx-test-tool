@@ -17,7 +17,7 @@ use std::{
 };
 use subxt::config::BlockHash;
 use tokio::{sync::mpsc, task::yield_now};
-use tracing::{info, trace};
+use tracing::trace;
 
 const LOG_TARGET: &str = "resubmission";
 const DEFAULT_RESUBMIT_DELAY: u64 = 3000;

@@ -1,9 +1,16 @@
-use crate::{error::Error, transaction::TransactionStatus};
+use crate::{
+	error::Error,
+	runner::{TxHash, TxTask},
+	transaction::{AccountMetadata, Transaction, TransactionStatus},
+};
 use average::{Estimate, Max, Mean, Min, Quantile};
 use parking_lot::RwLock;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
 	collections::HashMap,
+	fs::File,
+	io::{Read, Write},
+	marker::PhantomData,
 	sync::Arc,
 	time::{Duration, SystemTime},
 };
@@ -13,7 +20,7 @@ use tracing::{info, trace};
 pub const STAT_TARGET: &str = "stat";
 pub const LOG_TARGET: &str = "execution_log";
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ExecutionEvent<H> {
 	Popped(SystemTime),
 	Sent(SystemTime),
@@ -48,10 +55,6 @@ impl<H: BlockHash> From<TransactionStatus<H>> for ExecutionEvent<H> {
 		Self::TxPoolEvent(SystemTime::now(), value)
 	}
 }
-
-/// should contain account metadata from sending tool perspecive, e.g. //{}//{idx} used to generate
-/// account, or alice/bob maybe call etc...
-pub struct AccountMetadata {}
 
 pub trait ExecutionLog: Sync + Send {
 	type HashType: BlockHash;
@@ -90,15 +93,40 @@ pub trait ExecutionLog: Sync + Send {
 #[derive(Debug)]
 pub struct DefaultExecutionLog<H: BlockHash> {
 	events: RwLock<Vec<ExecutionEvent<H>>>,
+	account_metadata: AccountMetadata,
+	nonce: u128,
+	hash: H,
 }
 
-impl<H: BlockHash> Default for DefaultExecutionLog<H> {
+pub type Logs<T> = HashMap<TxHash<T>, Arc<DefaultExecutionLog<TxHash<T>>>>;
+
+impl<H: BlockHash + Default> Default for DefaultExecutionLog<H> {
 	fn default() -> Self {
-		Self { events: Default::default() }
+		Self {
+			events: Default::default(),
+			nonce: Default::default(),
+			account_metadata: Default::default(),
+			hash: Default::default(),
+		}
 	}
 }
 
-impl<H: BlockHash> DefaultExecutionLog<H> {
+impl<H: BlockHash + 'static + Default> DefaultExecutionLog<H> {
+	pub fn new_with_events(events: Vec<ExecutionEvent<H>>) -> Self {
+		Self { events: events.into(), ..Default::default() }
+	}
+}
+
+impl<H: BlockHash + 'static> DefaultExecutionLog<H> {
+	pub fn new_with_tx(t: &dyn Transaction<HashType = H>) -> Self {
+		Self {
+			events: Default::default(),
+			nonce: t.nonce(),
+			account_metadata: t.account_metadata(),
+			hash: t.hash(),
+		}
+	}
+
 	fn get_sent_time_stamp(&self) -> Option<SystemTime> {
 		self.events.read().iter().find_map(|e| match e {
 			ExecutionEvent::Sent(i) => Some(*i),
@@ -118,7 +146,7 @@ impl<H: BlockHash> DefaultExecutionLog<H> {
 	}
 }
 
-impl<H: BlockHash> ExecutionLog for DefaultExecutionLog<H> {
+impl<H: BlockHash + 'static> ExecutionLog for DefaultExecutionLog<H> {
 	type HashType = H;
 
 	fn push_event(&self, event: ExecutionEvent<Self::HashType>) {
@@ -129,15 +157,15 @@ impl<H: BlockHash> ExecutionLog for DefaultExecutionLog<H> {
 
 	// all methods used for generating stats:
 	fn hash(&self) -> Self::HashType {
-		unimplemented!()
+		self.hash
 	}
 
 	fn nonce(&self) -> u128 {
-		unimplemented!()
+		self.nonce
 	}
 
 	fn account_metadata(&self) -> AccountMetadata {
-		unimplemented!()
+		self.account_metadata.clone()
 	}
 
 	fn is_watched(&self) -> bool {
@@ -394,4 +422,73 @@ pub fn make_stats<E: ExecutionLog>(logs: impl IntoIterator<Item = Arc<E>>) {
 	// 	.set_size(Size::new(50, 25))
 	// 	.add_plot(Box::new(plot::Histogram::new_with_buckets_count(v, 10)));
 	// println!("{plot}");
+}
+
+pub mod journal {
+	use super::*;
+	pub struct Journal<T: TxTask> {
+		_p: PhantomData<T>,
+	}
+
+	//hack
+	#[derive(Serialize, Deserialize)]
+	struct DefaultExecutionLogSerdeHelper<H> {
+		events: Vec<ExecutionEvent<H>>,
+		account_metadata: AccountMetadata,
+		nonce: u128,
+		hash: H,
+	}
+
+	impl<H: BlockHash> DefaultExecutionLogSerdeHelper<H> {}
+
+	impl<H: BlockHash> From<DefaultExecutionLogSerdeHelper<H>> for DefaultExecutionLog<H> {
+		fn from(value: DefaultExecutionLogSerdeHelper<H>) -> Self {
+			DefaultExecutionLog {
+				events: value.events.clone().into(),
+				account_metadata: value.account_metadata,
+				nonce: value.nonce,
+				hash: value.hash,
+			}
+		}
+	}
+
+	impl<H: BlockHash + 'static> DefaultExecutionLog<H> {
+		fn get_data(&self) -> DefaultExecutionLogSerdeHelper<H> {
+			DefaultExecutionLogSerdeHelper {
+				events: self.events.read().clone(),
+				account_metadata: self.account_metadata.clone(),
+				nonce: self.nonce,
+				hash: self.hash,
+			}
+		}
+	}
+
+	impl<T: TxTask> Journal<T>
+	where
+		<T as TxTask>::HashType: 'static,
+	{
+		pub fn save_logs(logs: Logs<T>) {
+			let data = logs.into_iter().map(|(h, l)| (h, l.get_data())).collect::<HashMap<_, _>>();
+			let datetime: chrono::DateTime<chrono::Local> = SystemTime::now().into();
+			let filename = format!("out_{}.json", datetime.format("%Y%m%d_%H%M%S"));
+			let json = serde_json::to_string(&data).unwrap();
+			let mut file = File::create(filename).unwrap();
+			file.write_all(json.as_bytes()).unwrap();
+		}
+
+		pub fn load_logs(name: &str) -> Logs<T> {
+			// Open the file and read its contents
+			let mut file = File::open(name).expect("Unable to open file");
+			let mut json = String::new();
+			file.read_to_string(&mut json).expect("Unable to read file");
+
+			// Deserialize the JSON data into the desired type
+			let data: HashMap<TxHash<T>, DefaultExecutionLogSerdeHelper<TxHash<T>>> =
+				serde_json::from_str(&json).expect("Unable to deserialize JSON");
+
+			data.into_iter()
+				.map(|l| (l.0, Arc::new(DefaultExecutionLog::from(l.1))))
+				.collect()
+		}
+	}
 }

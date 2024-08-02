@@ -4,6 +4,16 @@ use serde::{Deserialize, Serialize};
 use std::{any::Any, pin::Pin};
 use subxt::{config::BlockHash, tx::TxStatus, OnlineClient};
 
+/// What account was used to sign transaction
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+pub enum AccountMetadata {
+	/// Holds index used for in account derivation
+	#[default]
+	None,
+	Derived(u32),
+	KeyRing(String),
+}
+
 pub trait TransactionStatusIsTerminal {
 	fn is_terminal(&self) -> bool;
 	fn is_finalized(&self) -> bool;
@@ -53,16 +63,12 @@ impl<H: BlockHash> TransactionStatusIsTerminal for TransactionStatus<H> {
 	}
 }
 
-// pub enum TransactiondStoreStatus {
-//     Ready,
-//     InProgress,
-//     Done,
-// }
-
 pub trait Transaction: Send + Sync {
-	type HashType: BlockHash;
+	type HashType: BlockHash + 'static;
 	fn hash(&self) -> Self::HashType;
 	fn as_any(&self) -> &dyn Any;
+	fn nonce(&self) -> u128;
+	fn account_metadata(&self) -> AccountMetadata;
 }
 
 pub trait ResubmitHandler: Sized {

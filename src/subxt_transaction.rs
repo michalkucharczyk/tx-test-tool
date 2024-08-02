@@ -1,6 +1,8 @@
 use crate::{
 	error::Error,
-	transaction::{ResubmitHandler, Transaction, TransactionStatus, TransactionsSink},
+	transaction::{
+		AccountMetadata, ResubmitHandler, Transaction, TransactionStatus, TransactionsSink,
+	},
 };
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -21,7 +23,21 @@ impl subxt::Config for EthRuntimeConfig {
 	type AssetId = u32;
 }
 
-pub type TransactionSubxt<C> = SubmittableExtrinsic<C, OnlineClient<C>>;
+pub struct TransactionSubxt<C: subxt::Config> {
+	extrinsic: SubmittableExtrinsic<C, OnlineClient<C>>,
+	nonce: u128,
+	account_metadata: AccountMetadata,
+}
+
+impl<C: subxt::Config> TransactionSubxt<C> {
+	pub fn new(
+		extrinsic: SubmittableExtrinsic<C, OnlineClient<C>>,
+		nonce: u128,
+		account_metadata: AccountMetadata,
+	) -> Self {
+		Self { extrinsic, nonce, account_metadata }
+	}
+}
 
 pub type TransactionSubstrate = TransactionSubxt<PolkadotConfig>;
 pub type TransactionEth = TransactionSubxt<EthRuntimeConfig>;
@@ -32,10 +48,16 @@ pub type TransactionEth = TransactionSubxt<EthRuntimeConfig>;
 impl<C: subxt::Config> Transaction for TransactionSubxt<C> {
 	type HashType = <C as subxt::Config>::Hash;
 	fn hash(&self) -> Self::HashType {
-		self.hash()
+		self.extrinsic.hash()
 	}
 	fn as_any(&self) -> &dyn Any {
 		self
+	}
+	fn nonce(&self) -> u128 {
+		self.nonce
+	}
+	fn account_metadata(&self) -> AccountMetadata {
+		self.account_metadata.clone()
 	}
 }
 
@@ -65,7 +87,7 @@ impl<C: subxt::Config> TransactionsSink<<C as subxt::Config>::Hash> for Transact
 		tx: &dyn Transaction<HashType = <C as subxt::Config>::Hash>,
 	) -> Result<StreamOf<TransactionStatus<<C as subxt::Config>::Hash>>, Error> {
 		let tx = tx.as_any().downcast_ref::<TransactionSubxt<C>>().unwrap();
-		let result = tx.submit_and_watch().await;
+		let result = tx.extrinsic.submit_and_watch().await;
 
 		match result {
 			Ok(stream) => Ok(stream
@@ -130,8 +152,11 @@ mod tests {
 			],
 		);
 
-		let tx: TransactionSubxt<EthRuntimeConfig> =
-			api.tx().create_signed_offline(&tx_call, &baltathar, tx_params).unwrap();
+		let tx = TransactionSubxt::<EthRuntimeConfig>::new(
+			api.tx().create_signed_offline(&tx_call, &baltathar, tx_params).unwrap(),
+			nonce as u128,
+			AccountMetadata::KeyRing("baltathar".to_string()),
+		);
 
 		info!("tx hash: {:?}", tx.hash());
 

@@ -1,8 +1,8 @@
-//todo:
 #![allow(dead_code)]
 
 use tracing::{debug, info, trace};
 
+mod cli;
 mod error;
 mod execution_log;
 mod fake_transaction;
@@ -12,6 +12,7 @@ mod runner;
 mod subxt_api_connector;
 mod subxt_transaction;
 mod transaction;
+use clap::Parser;
 
 fn init_logger() {
 	use std::sync::Once;
@@ -47,4 +48,44 @@ async fn main() {
 	debug!(target: "y", "test");
 	trace!(target: "z", "test");
 	trace!(target: "a", "test");
+
+	let _cli = cli::Cli::parse();
+
+	// match &cli.command {
+	// 	Commands::Tx {
+	// 		chain,
+	// 		ws,
+	// 		account,
+	// 		nonce,
+	// 		unwatched,
+	// 		block_monitor,
+	// 		mortal,
+	// 		log_file,
+	// 		tx_command,
+	// 	} => {
+	// 		match tx_command {
+	// 			TxCommands::OneShot { account, nonce } => {
+	// 				// Handle one-shot command
+	// 			},
+	// 			TxCommands::FromSingleAccount { account, from, to, count } => {
+	// 				// Handle from-single-account command
+	// 			},
+	// 			TxCommands::FromManyAccounts { start_id, last_id, count, from, to } => {
+	// 				// Handle from-many-accounts command
+	// 			},
+	// 		}
+	// 	},
+	// 	Commands::CheckNonce { ws, account } => {
+	// 		// Handle check-nonce command
+	// 	},
+	// 	Commands::Metadata { ws } => {
+	// 		// Handle metadata command
+	// 	},
+	// 	Commands::BlockMonitor { ws } => {
+	// 		// Handle block-monitor command
+	// 	},
+	// 	Commands::LoadLog { log_file, show_graphs, show_errors } => {
+	// 		// Handle load-log command
+	// 	},
+	// }
 }
