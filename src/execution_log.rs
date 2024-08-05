@@ -1,6 +1,6 @@
 use crate::{
 	error::Error,
-	runner::{TxHash, TxTask},
+	runner::{TxTashHash, TxTask},
 	transaction::{AccountMetadata, Transaction, TransactionStatus},
 };
 use average::{Estimate, Max, Mean, Min, Quantile};
@@ -98,7 +98,7 @@ pub struct DefaultExecutionLog<H: BlockHash> {
 	hash: H,
 }
 
-pub type Logs<T> = HashMap<TxHash<T>, Arc<DefaultExecutionLog<TxHash<T>>>>;
+pub type Logs<T> = HashMap<TxTashHash<T>, Arc<DefaultExecutionLog<TxTashHash<T>>>>;
 
 impl<H: BlockHash + Default> Default for DefaultExecutionLog<H> {
 	fn default() -> Self {
@@ -465,7 +465,7 @@ pub mod journal {
 
 	impl<T: TxTask> Journal<T>
 	where
-		<T as TxTask>::HashType: 'static,
+		TxTashHash<T>: 'static,
 	{
 		pub fn save_logs(logs: Logs<T>) {
 			let data = logs.into_iter().map(|(h, l)| (h, l.get_data())).collect::<HashMap<_, _>>();
@@ -483,7 +483,7 @@ pub mod journal {
 			file.read_to_string(&mut json).expect("Unable to read file");
 
 			// Deserialize the JSON data into the desired type
-			let data: HashMap<TxHash<T>, DefaultExecutionLogSerdeHelper<TxHash<T>>> =
+			let data: HashMap<TxTashHash<T>, DefaultExecutionLogSerdeHelper<TxTashHash<T>>> =
 				serde_json::from_str(&json).expect("Unable to deserialize JSON");
 
 			data.into_iter()

@@ -4,11 +4,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[clap(name = "txtt")]
 pub struct Cli {
 	#[clap(subcommand)]
-	command: Commands,
+	pub command: CliCommand,
 }
 
 #[derive(Subcommand)]
-enum Commands {
+pub enum CliCommand {
 	Tx {
 		/// The type of chain to be used.
 		#[clap(long, default_value = "sub")]
@@ -29,7 +29,7 @@ enum Commands {
 		#[clap(long)]
 		log_file: Option<String>,
 		#[clap(subcommand)]
-		tx_command: TxCommands,
+		scenario: SendingScenario,
 	},
 	/// Check nonce for given account.
 	CheckNonce {
@@ -68,7 +68,7 @@ enum Commands {
 
 #[derive(Subcommand)]
 /// Send transactions to the node using different scenarios.
-enum TxCommands {
+pub enum SendingScenario {
 	/// Send single transactions to the node.
 	OneShot {
 		/// Account identifier to be used. It can be keyring account (alice, bob,...) or number of
@@ -77,7 +77,7 @@ enum TxCommands {
 		account: String,
 		/// Nonce used for the account.
 		#[clap(long, default_value = "0")]
-		nonce: Option<u32>,
+		nonce: Option<u128>,
 	},
 	/// Send multiple transactions to the node using a single account.
 	FromSingleAccount {
@@ -88,7 +88,7 @@ enum TxCommands {
 		/// Starting nonce of transactions batch. If not given the current nonce for the account
 		/// will be fetched from node.
 		#[clap(long)]
-		from: Option<u32>,
+		from: Option<u128>,
 		/// Number of transaction in the batch.
 		#[clap(long, conflicts_with_all(&["from","to"]))]
 		count: Option<u32>,
@@ -105,7 +105,7 @@ enum TxCommands {
 		/// Starting nonce of transactions batch. If not given the current nonce for the account
 		/// will be fetched from node.
 		#[clap(long)]
-		from: Option<u32>,
+		from: Option<u128>,
 		/// Number of transaction in the batch.
 		#[clap(long, conflicts_with_all(&["from","to"]))]
 		count: Option<u32>,
@@ -113,7 +113,7 @@ enum TxCommands {
 }
 
 #[derive(ValueEnum, Clone)]
-enum ChainType {
+pub enum ChainType {
 	/// Substrate compatible chain.
 	Sub,
 	/// Etheruem compatible chain.

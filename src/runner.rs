@@ -18,8 +18,8 @@ const LOG_TARGET: &str = "runner";
 
 pub enum ExecutionResult<T: TxTask> {
 	NeedsResubmit(ResubmitReason, T),
-	Error(TxHash<T>),
-	Done(TxHash<T>),
+	Error(TxTashHash<T>),
+	Done(TxTashHash<T>),
 }
 
 impl<T: TxTask> std::fmt::Debug for ExecutionResult<T> {
@@ -34,8 +34,6 @@ impl<T: TxTask> std::fmt::Debug for ExecutionResult<T> {
 
 #[async_trait]
 pub trait TxTask: Send + Sync + Sized {
-	//todo:remove
-	type HashType: BlockHash + 'static;
 	type Transaction: Transaction + ResubmitHandler;
 
 	fn tx(&self) -> &Self::Transaction;
@@ -43,28 +41,28 @@ pub trait TxTask: Send + Sync + Sized {
 
 	async fn send_watched_tx(
 		self: Self,
-		log: Arc<dyn ExecutionLog<HashType = TxHash<Self>>>,
-		rpc: Arc<dyn TransactionsSink<Self::HashType>>,
+		log: Arc<dyn ExecutionLog<HashType = TxTashHash<Self>>>,
+		rpc: Arc<dyn TransactionsSink<TxTashHash<Self>>>,
 	) -> ExecutionResult<Self>;
 
 	async fn send_tx(
 		self: Self,
-		log: Arc<dyn ExecutionLog<HashType = TxHash<Self>>>,
-		rpc: Arc<dyn TransactionsSink<Self::HashType>>,
+		log: Arc<dyn ExecutionLog<HashType = TxTashHash<Self>>>,
+		rpc: Arc<dyn TransactionsSink<TxTashHash<Self>>>,
 	) -> ExecutionResult<Self>;
 
 	async fn execute(
 		self: Self,
-		log: Arc<dyn ExecutionLog<HashType = TxHash<Self>>>,
-		rpc: Arc<dyn TransactionsSink<Self::HashType>>,
+		log: Arc<dyn ExecutionLog<HashType = TxTashHash<Self>>>,
+		rpc: Arc<dyn TransactionsSink<TxTashHash<Self>>>,
 	) -> ExecutionResult<Self>;
 
 	fn handle_resubmit_request(self) -> Option<Self>;
 }
 
-pub type TxHash<T> = <<T as TxTask>::Transaction as Transaction>::HashType;
+pub type TxTashHash<T> = <<T as TxTask>::Transaction as Transaction>::HashType;
 
-struct DefaultTxTask<T>
+pub struct DefaultTxTask<T>
 where
 	T: Transaction,
 	<T as Transaction>::HashType: 'static,
@@ -77,7 +75,6 @@ where
 impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 	for DefaultTxTask<T>
 {
-	type HashType = H;
 	type Transaction = T;
 
 	fn tx(&self) -> &T {
@@ -99,8 +96,8 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 
 	async fn send_watched_tx(
 		self: Self,
-		log: Arc<dyn ExecutionLog<HashType = Self::HashType>>,
-		rpc: Arc<dyn TransactionsSink<Self::HashType>>,
+		log: Arc<dyn ExecutionLog<HashType = TxTashHash<Self>>>,
+		rpc: Arc<dyn TransactionsSink<TxTashHash<Self>>>,
 	) -> ExecutionResult<Self> {
 		log.push_event(ExecutionEvent::sent());
 		match rpc.submit_and_watch(self.tx()).await {
@@ -135,8 +132,8 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 
 	async fn send_tx(
 		self: Self,
-		log: Arc<dyn ExecutionLog<HashType = Self::HashType>>,
-		rpc: Arc<dyn TransactionsSink<Self::HashType>>,
+		log: Arc<dyn ExecutionLog<HashType = TxTashHash<Self>>>,
+		rpc: Arc<dyn TransactionsSink<TxTashHash<Self>>>,
 	) -> ExecutionResult<Self> {
 		log.push_event(ExecutionEvent::sent());
 		match rpc.submit(self.tx()).await {
@@ -159,8 +156,8 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 
 	async fn execute(
 		self: Self,
-		log: Arc<dyn ExecutionLog<HashType = Self::HashType>>,
-		rpc: Arc<dyn TransactionsSink<Self::HashType>>,
+		log: Arc<dyn ExecutionLog<HashType = TxTashHash<Self>>>,
+		rpc: Arc<dyn TransactionsSink<TxTashHash<Self>>>,
 	) -> ExecutionResult<Self> {
 		if self.is_watched() {
 			self.send_watched_tx(log, rpc).await
@@ -180,23 +177,23 @@ trait TxTaskStore {
 	fn pop() -> Option<Self::Transaction>;
 }
 
-type FakeTxTask = DefaultTxTask<FakeTransaction>;
+pub type FakeTxTask = DefaultTxTask<FakeTransaction>;
 
 impl<T: Transaction> DefaultTxTask<T> {
-	fn new_watched(tx: T) -> Self {
+	pub fn new_watched(tx: T) -> Self {
 		Self { tx, watched: true }
 	}
-	fn new_unwatched(tx: T) -> Self {
+	pub fn new_unwatched(tx: T) -> Self {
 		Self { tx, watched: false }
 	}
 }
 
-struct Runner<T: TxTask, Sink: TransactionsSink<T::HashType>, Queue: ResubmissionQueue<T>> {
+pub struct Runner<T: TxTask, Sink: TransactionsSink<TxTashHash<T>>, Queue: ResubmissionQueue<T>> {
 	initial_tasks: usize,
 	logs: Logs<T>,
 	transactions: Vec<T>,
-	done: Vec<TxHash<T>>,
-	errors: Vec<TxHash<T>>,
+	done: Vec<TxTashHash<T>>,
+	errors: Vec<TxTashHash<T>>,
 	rpc: Arc<Sink>,
 	resubmission_queue: Queue,
 }
@@ -205,10 +202,10 @@ type FakeTxRunner = Runner<FakeTxTask, FakeTransactionSink, DefaultResubmissionQ
 
 impl<T: TxTask, Sink, Queue: ResubmissionQueue<T>> Runner<T, Sink, Queue>
 where
-	Sink: TransactionsSink<T::HashType> + 'static,
-	<T as TxTask>::HashType: 'static,
+	Sink: TransactionsSink<TxTashHash<T>> + 'static,
+	TxTashHash<T>: 'static,
 {
-	fn new(
+	pub fn new(
 		initial_tasks: usize,
 		rpc: Sink,
 		transactions: Vec<T>,
@@ -319,7 +316,7 @@ mod tests {
 		init_logger,
 		runner::{DefaultResubmissionQueue, FakeTxTask},
 		subxt_api_connector,
-		subxt_transaction::{EthRuntimeConfig, TransactionEth, TransactionsSinkSubxt},
+		subxt_transaction::{EthRuntimeConfig, SubxtTransactionsSink, TransactionEth},
 		transaction::AccountMetadata,
 	};
 	use futures::future::join;
@@ -398,7 +395,7 @@ mod tests {
 		//     .unwrap();
 		let api = subxt_api_connector::connect("ws://127.0.0.1:9933").await.unwrap();
 
-		let rpc = TransactionsSinkSubxt::<EthRuntimeConfig>::new();
+		let rpc = SubxtTransactionsSink::<EthRuntimeConfig>::new();
 
 		let transactions = (0..3000)
 			.map(|i| SubxtEthTxTask::new_watched(make_subxt_transaction(&api, i + 16000)))
@@ -410,7 +407,7 @@ mod tests {
 
 		let mut r = Runner::<
 			DefaultTxTask<TransactionEth>,
-			TransactionsSinkSubxt<EthRuntimeConfig>,
+			SubxtTransactionsSink<EthRuntimeConfig>,
 			DefaultResubmissionQueue<DefaultTxTask<TransactionEth>>,
 		>::new(10_000, rpc, transactions, queue);
 		join(queue_task, r.run_poc2()).await;

@@ -70,18 +70,18 @@ impl<C: subxt::Config> ResubmitHandler for TransactionSubxt<C> {
 
 type StreamOf<I> = Pin<Box<dyn futures::Stream<Item = I> + Send>>;
 
-pub struct TransactionsSinkSubxt<C: subxt::Config> {
+pub struct SubxtTransactionsSink<C: subxt::Config> {
 	_p: PhantomData<C>,
 }
 
-impl<C: subxt::Config> TransactionsSinkSubxt<C> {
+impl<C: subxt::Config> SubxtTransactionsSink<C> {
 	pub fn new() -> Self {
 		Self { _p: Default::default() }
 	}
 }
 
 #[async_trait]
-impl<C: subxt::Config> TransactionsSink<<C as subxt::Config>::Hash> for TransactionsSinkSubxt<C> {
+impl<C: subxt::Config> TransactionsSink<<C as subxt::Config>::Hash> for SubxtTransactionsSink<C> {
 	async fn submit_and_watch(
 		&self,
 		tx: &dyn Transaction<HashType = <C as subxt::Config>::Hash>,
@@ -160,7 +160,7 @@ mod tests {
 
 		info!("tx hash: {:?}", tx.hash());
 
-		let sink = TransactionsSinkSubxt::<EthRuntimeConfig>::new();
+		let sink = SubxtTransactionsSink::<EthRuntimeConfig>::new();
 
 		let tx: Box<dyn Transaction<HashType = <EthRuntimeConfig as subxt::Config>::Hash>> =
 			Box::from(tx);
