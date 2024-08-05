@@ -1,4 +1,5 @@
 use crate::{
+	cli::AccountsDescription,
 	error::Error,
 	transaction::{
 		AccountMetadata, ResubmitHandler, Transaction, TransactionStatus, TransactionsSink,
@@ -6,9 +7,22 @@ use crate::{
 };
 use async_trait::async_trait;
 use futures::StreamExt;
-use std::{any::Any, marker::PhantomData, pin::Pin};
-use subxt::{tx::SubmittableExtrinsic, OnlineClient, PolkadotConfig};
-use subxt_signer::eth::{AccountId20, Signature};
+use parking_lot::RwLock;
+use std::{any::Any, collections::HashMap, hash::Hash, marker::PhantomData, pin::Pin, sync::Arc};
+use subxt::{
+	config::signed_extensions::{
+		ChargeAssetTxPaymentParams, ChargeTransactionPaymentParams, CheckMortalityParams,
+		CheckNonceParams,
+	},
+	dynamic::{At, Value},
+	tx::{Signer, SubmittableExtrinsic},
+	OnlineClient, PolkadotConfig,
+};
+use subxt_core::config::SubstrateExtrinsicParamsBuilder;
+use subxt_signer::eth::{dev, AccountId20, Keypair as EthKeypair, Signature};
+use tracing::{debug, info, trace};
+
+const LOG_TARGET: &str = "subxt_tx";
 
 pub enum EthRuntimeConfig {}
 impl subxt::Config for EthRuntimeConfig {
@@ -23,11 +37,17 @@ impl subxt::Config for EthRuntimeConfig {
 	type AssetId = u32;
 }
 
+pub type HashOf<C> = <C as subxt::Config>::Hash;
+pub type AccountIdOf<C> = <C as subxt::Config>::AccountId;
+
 pub struct TransactionSubxt<C: subxt::Config> {
 	extrinsic: SubmittableExtrinsic<C, OnlineClient<C>>,
 	nonce: u128,
 	account_metadata: AccountMetadata,
 }
+
+pub type EthTransaction = TransactionSubxt<EthRuntimeConfig>;
+pub type EthTransactionsSink = SubxtTransactionsSink<EthRuntimeConfig, EthKeypair>;
 
 impl<C: subxt::Config> TransactionSubxt<C> {
 	pub fn new(
@@ -70,18 +90,117 @@ impl<C: subxt::Config> ResubmitHandler for TransactionSubxt<C> {
 
 type StreamOf<I> = Pin<Box<dyn futures::Stream<Item = I> + Send>>;
 
-pub struct SubxtTransactionsSink<C: subxt::Config> {
-	_p: PhantomData<C>,
+pub struct SubxtTransactionsSink<C: subxt::Config, KP: Signer<C>> {
+	api: OnlineClient<C>,
+	from_accounts: Arc<RwLock<HashMap<String, KP>>>,
+	to_accounts: Arc<RwLock<HashMap<String, KP>>>,
+	nonces: Arc<RwLock<HashMap<String, u128>>>,
 }
 
-impl<C: subxt::Config> SubxtTransactionsSink<C> {
-	pub fn new() -> Self {
-		Self { _p: Default::default() }
+impl<C, KP> SubxtTransactionsSink<C, KP>
+where
+	AccountIdOf<C>: Send + Sync + AsRef<[u8]>,
+	KP: Signer<C> + Clone + Send + Sync + 'static,
+	C: subxt::Config,
+{
+	pub async fn new() -> Self {
+		Self {
+			api: OnlineClient::<C>::from_insecure_url("ws://127.0.0.1:9933").await.unwrap(),
+			from_accounts: Default::default(),
+			to_accounts: Default::default(),
+			nonces: Default::default(),
+		}
+	}
+
+	pub async fn new_with_uri(uri: &String) -> Self {
+		Self {
+			api: OnlineClient::<C>::from_insecure_url(uri).await.unwrap(),
+			from_accounts: Default::default(),
+			to_accounts: Default::default(),
+			nonces: Default::default(),
+		}
+	}
+
+	pub async fn new_with_uri_with_accounts_description<G>(
+		uri: &String,
+		accounts_description: AccountsDescription,
+		generate_pair: G,
+	) -> Self
+	where
+		G: Fn(&String) -> KP + Copy + Send + 'static,
+	{
+		let from_accounts =
+			derive_accounts(accounts_description.clone(), &SENDER_SEED, generate_pair);
+		let to_accounts = derive_accounts(accounts_description, &RECEIVER_SEED, generate_pair);
+		Self {
+			// api: OnlineClient::<C>::from_insecure_url(uri).await.unwrap(),
+			api: crate::subxt_api_connector::connect(uri)
+				.await
+				.expect("connecting to node should not fail"),
+			from_accounts: Arc::from(RwLock::from(from_accounts)),
+			to_accounts: Arc::from(RwLock::from(to_accounts)),
+			nonces: Default::default(),
+		}
+	}
+
+	fn api(&self) -> OnlineClient<C> {
+		self.api.clone()
+	}
+
+	fn get_from_account_id(&self, account: &String) -> Option<AccountIdOf<C>> {
+		self.from_accounts.read().get(account).map(|a| a.account_id())
+	}
+
+	fn get_to_account_id(&self, account: &String) -> Option<AccountIdOf<C>> {
+		self.to_accounts.read().get(account).map(|a| a.account_id())
+	}
+
+	fn get_from_key_pair(&self, account: &String) -> Option<KP> {
+		self.from_accounts.read().get(account).cloned()
+	}
+
+	async fn check_account_nonce(
+		&self,
+		account: AccountIdOf<C>,
+	) -> Result<u128, Box<dyn std::error::Error>> {
+		if let Some(nonce) = self.nonces.write().get_mut(&hex::encode(account.clone())) {
+			*nonce = *nonce + 1;
+			return Ok(*nonce)
+		}
+
+		{
+			let storage_query = subxt::dynamic::storage(
+				"System",
+				"Account",
+				vec![Value::from_bytes(account.clone())],
+			);
+			let result = self.api.storage().at_latest().await?.fetch(&storage_query).await?;
+			let value = result
+				.ok_or(format!("Sender account {:?} shall exists", hex::encode(account.clone())))?
+				.to_value()?;
+
+			debug!(target:LOG_TARGET,"account has free balance: {:?}", value.at("data").at("free"));
+			debug!(target:LOG_TARGET,"account has nonce: {:?}", value.at("nonce"));
+			// info!("account has nonce: {:#?}", value);
+			let nonce = value
+				.at("nonce")
+				.expect("nonce shall be there")
+				.as_u128()
+				.expect("shall be u128");
+
+			self.nonces.write().insert(hex::encode(account), nonce);
+			Ok(nonce)
+		}
 	}
 }
 
 #[async_trait]
-impl<C: subxt::Config> TransactionsSink<<C as subxt::Config>::Hash> for SubxtTransactionsSink<C> {
+impl<C, KP> TransactionsSink<<C as subxt::Config>::Hash> for SubxtTransactionsSink<C, KP>
+where
+	AccountIdOf<C>: Send + Sync,
+	C: subxt::Config,
+	KP: Signer<C> + Send + Sync + 'static,
+{
 	async fn submit_and_watch(
 		&self,
 		tx: &dyn Transaction<HashType = <C as subxt::Config>::Hash>,
@@ -111,6 +230,141 @@ impl<C: subxt::Config> TransactionsSink<<C as subxt::Config>::Hash> for SubxtTra
 	fn count(&self) -> usize {
 		todo!()
 	}
+}
+
+const SENDER_SEED: &str = "//Sender";
+const RECEIVER_SEED: &str = "//Receiver";
+const SEED: &str = "bottom drive obey lake curtain smoke basket hold race lonely fit walk";
+
+pub fn generate_ecdsa_keypair(derivation: &String) -> EthKeypair {
+	match derivation.as_str() {
+		"alice" | "alith" => dev::alith(),
+		"bob" | "baltathar" => dev::baltathar(),
+		"charlie" | "charleth" => dev::charleth(),
+		"dave" | "dorothy" => dev::dorothy(),
+		"eve" | "ethan" => dev::ethan(),
+		"ferdie" | "faith" => dev::faith(),
+		_ => {
+			use std::str::FromStr;
+			let u = subxt_signer::SecretUri::from_str(&derivation).unwrap();
+			<subxt_signer::ecdsa::Keypair>::from_uri(&u).unwrap().into()
+		},
+	}
+}
+
+pub fn derive_accounts<C, KP, G>(
+	accounts_description: AccountsDescription,
+	seed: &str,
+	generate: G,
+) -> HashMap<String, KP>
+where
+	C: subxt::Config,
+	KP: Signer<C> + Send + Sync + 'static,
+	G: Fn(&String) -> KP + Copy + Send + 'static,
+{
+	match accounts_description {
+		AccountsDescription::Derived(range) => {
+			let from_id = range.start as usize;
+			let to_id = range.end as usize;
+			let n = to_id - from_id;
+			let t = std::cmp::min(
+				n,
+				std::thread::available_parallelism().unwrap_or(1usize.try_into().unwrap()).get(),
+			);
+			let mut threads = Vec::new();
+
+			(0..t).into_iter().for_each(|thread_idx| {
+				// let chunk = (thread_idx * (n / t))..((thread_idx + 1) * (n / t));
+				let chunk =
+					(from_id + (thread_idx * n) / t)..(from_id + ((thread_idx + 1) * n) / t);
+				let seed = seed.to_string().clone();
+				threads.push(std::thread::spawn(move || {
+					chunk
+						.into_iter()
+						.map(move |i| {
+							let derivation = format!("{SEED}{seed}//{i}");
+							// info!("derivation: {thread_idx:} {derivation:?}");
+							(i.to_string(), generate(&derivation))
+						})
+						.collect::<Vec<_>>()
+				}));
+			});
+
+			threads
+				.into_iter()
+				.map(|h| h.join().unwrap())
+				.flatten()
+				// .map(|p| (p, funds))
+				.collect()
+		},
+		AccountsDescription::Keyring(account) =>
+			HashMap::from([(account.clone(), generate(&account))]),
+	}
+}
+
+pub async fn build_subxt_tx<C, KP>(
+	account: &String,
+	nonce: &Option<u128>,
+	sink: &SubxtTransactionsSink<C, KP>,
+) -> TransactionSubxt<C>
+where
+	AccountIdOf<C>: Send + Sync,
+	AccountIdOf<C>: AsRef<[u8]>,
+	C: subxt::Config,
+	KP: Signer<C> + Clone + Send + Sync + 'static,
+	<<C as subxt::Config>::ExtrinsicParams as subxt::config::ExtrinsicParams<C>>::Params: From<(
+		(),
+		(),
+		CheckNonceParams,
+		(),
+		CheckMortalityParams<C>,
+		ChargeAssetTxPaymentParams<C>,
+		ChargeTransactionPaymentParams,
+		(),
+	)>,
+{
+	//todo:
+	let to_account_id = sink.get_to_account_id(account).expect("to account exists");
+	let from_account_id = sink.get_from_account_id(account).expect("from account exists");
+	let from_keypair = sink.get_from_key_pair(account).expect("from account exists");
+
+	let nonce = if let Some(nonce) = nonce {
+		debug!("nonce for {:?} -> {:?}", account, nonce);
+		*nonce
+	} else {
+		let nonce = sink
+			.check_account_nonce(from_account_id)
+			.await
+			.expect("account nonce shall exists");
+		debug!("checked nonce for {:?} -> {:?}", account, nonce);
+		nonce
+	};
+	let tx_params = <SubstrateExtrinsicParamsBuilder<C>>::new().nonce(nonce as u64).build().into();
+
+	let tx_call = subxt::dynamic::tx(
+		"Balances",
+		"transfer_keep_alive",
+		vec![
+			// // Substrate:
+			// Value::unnamed_variant("Id", [Value::from_bytes(receiver.public())]),
+			// Eth:
+			Value::unnamed_composite(vec![Value::from_bytes(to_account_id)]),
+			Value::u128(1u32.into()),
+		],
+	);
+
+	let tx = TransactionSubxt::<C>::new(
+		sink.api()
+			.tx()
+			.create_signed_offline(&tx_call, &from_keypair, tx_params)
+			.unwrap(),
+		nonce as u128,
+		AccountMetadata::KeyRing("baltathar".to_string()),
+	);
+
+	debug!(target:LOG_TARGET,"tx hash: {:?}", tx.hash());
+
+	tx
 }
 
 #[cfg(test)]
@@ -160,7 +414,7 @@ mod tests {
 
 		info!("tx hash: {:?}", tx.hash());
 
-		let sink = SubxtTransactionsSink::<EthRuntimeConfig>::new();
+		let sink = SubxtTransactionsSink::<EthRuntimeConfig>::new().await;
 
 		let tx: Box<dyn Transaction<HashType = <EthRuntimeConfig as subxt::Config>::Hash>> =
 			Box::from(tx);

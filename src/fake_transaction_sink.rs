@@ -8,15 +8,20 @@ use crate::{
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use parking_lot::RwLock;
-use std::{collections::HashSet, sync::Arc};
+use std::{
+	collections::{HashMap, HashSet},
+	sync::Arc,
+};
+use tracing::trace;
 
 pub struct FakeTransactionSink {
 	txs: Arc<RwLock<HashSet<FakeHash>>>,
+	pub(crate) nonces: Arc<RwLock<HashMap<String, u128>>>,
 }
 
 impl FakeTransactionSink {
 	pub fn new() -> Self {
-		return Self { txs: Default::default() };
+		return Self { txs: Default::default(), nonces: Default::default() };
 	}
 }
 
@@ -26,10 +31,12 @@ impl TransactionsSink<FakeHash> for FakeTransactionSink {
 		&self,
 		tx: &dyn Transaction<HashType = FakeHash>,
 	) -> Result<StreamOf<TransactionStatus<FakeHash>>, Error> {
+		trace!(target: crate::fake_transaction::LOG_TARGET, "submit_and_watch");
 		let hash = tx.hash();
 		self.txs.write().insert(tx.hash());
 		let txs = self.txs.clone();
 		let tx = tx.as_any().downcast_ref::<FakeTransaction>().unwrap();
+		trace!(target: crate::fake_transaction::LOG_TARGET, hash=?tx.hash(),"submit_and_watch");
 		Ok(tx
 			.events()
 			.map(move |e| {

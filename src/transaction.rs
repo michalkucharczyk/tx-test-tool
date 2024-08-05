@@ -39,8 +39,8 @@ impl<C: subxt::Config> From<TxStatus<C, OnlineClient<C>>> for TransactionStatus<
 		match value {
 			TxStatus::Validated => TransactionStatus::Validated,
 			TxStatus::Broadcasted { num_peers } => TransactionStatus::Broadcasted(num_peers),
-			TxStatus::InBestBlock(tx) => TransactionStatus::InBlock(tx.extrinsic_hash()),
-			TxStatus::InFinalizedBlock(tx) => TransactionStatus::Finalized(tx.extrinsic_hash()),
+			TxStatus::InBestBlock(tx) => TransactionStatus::InBlock(tx.block_hash()),
+			TxStatus::InFinalizedBlock(tx) => TransactionStatus::Finalized(tx.block_hash()),
 			TxStatus::Error { message } => TransactionStatus::Error(message),
 			TxStatus::Invalid { message } => TransactionStatus::Invalid(message),
 			TxStatus::Dropped { message } => TransactionStatus::Dropped(message),

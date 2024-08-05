@@ -361,7 +361,9 @@ pub fn failure_reason_stats<'a, E: ExecutionLog + 'a>(
 		}
 	}
 
-	info!(?map, "{name} -> {:#?}", map);
+	info!(
+		target: STAT_TARGET,
+		?map, "{name} -> {:#?}", map);
 }
 
 pub fn make_stats<E: ExecutionLog>(logs: impl IntoIterator<Item = Arc<E>>) {

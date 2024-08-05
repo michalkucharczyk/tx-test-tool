@@ -8,11 +8,15 @@ use crate::{
 	transaction::{ResubmitHandler, Transaction, TransactionStatusIsTerminal, TransactionsSink},
 };
 use async_trait::async_trait;
-use futures::{stream::FuturesUnordered, StreamExt};
-use std::{sync::Arc, time::Duration};
+use futures::{stream::FuturesUnordered, Future, StreamExt};
+use std::{pin::Pin, sync::Arc, time::Duration};
 use subxt::config::BlockHash;
-use tokio::select;
-use tracing::{info, trace};
+use tokio::{
+	select,
+	sync::mpsc::{channel, Receiver, Sender},
+	task::yield_now,
+};
+use tracing::{debug, info, trace};
 
 const LOG_TARGET: &str = "runner";
 
@@ -104,7 +108,8 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 			Ok(mut stream) => {
 				log.push_event(ExecutionEvent::submit_and_watch_result(Ok(())));
 				while let Some(status) = stream.next().await {
-					// info!("{status:?}");
+					yield_now().await;
+					debug!(hash=?self.tx().hash(),"status: {status:?}");
 					log.push_event(status.clone().into());
 					if status.is_finalized() {
 						return ExecutionResult::Done(self.tx().hash());
@@ -119,6 +124,7 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 				ExecutionResult::Error(self.tx().hash())
 			},
 			Err(e) => {
+				debug!(hash=?self.tx().hash(),"error: {e:?}");
 				let result = if let Some(reason) = e.needs_resubmission() {
 					ExecutionResult::NeedsResubmit(reason, self)
 				} else {
@@ -196,11 +202,12 @@ pub struct Runner<T: TxTask, Sink: TransactionsSink<TxTashHash<T>>, Queue: Resub
 	errors: Vec<TxTashHash<T>>,
 	rpc: Arc<Sink>,
 	resubmission_queue: Queue,
+	stop_rx: Receiver<()>,
 }
 
 type FakeTxRunner = Runner<FakeTxTask, FakeTransactionSink, DefaultResubmissionQueue<FakeTxTask>>;
 
-impl<T: TxTask, Sink, Queue: ResubmissionQueue<T>> Runner<T, Sink, Queue>
+impl<T: TxTask + 'static, Sink, Queue: ResubmissionQueue<T>> Runner<T, Sink, Queue>
 where
 	Sink: TransactionsSink<TxTashHash<T>> + 'static,
 	TxTashHash<T>: 'static,
@@ -210,30 +217,57 @@ where
 		rpc: Sink,
 		transactions: Vec<T>,
 		resubmission_queue: Queue,
-	) -> Self {
+	) -> (Sender<()>, Self) {
 		let logs = transactions
 			.iter()
 			.map(|t| (t.tx().hash(), Arc::new(DefaultExecutionLog::new_with_tx(t.tx()))))
 			.collect();
 
-		Self {
-			initial_tasks,
-			logs,
-			transactions: transactions.into(),
-			rpc: rpc.into(),
-			resubmission_queue,
-			done: Default::default(),
-			errors: Default::default(),
-		}
+		let (tx, rx) = channel(1);
+		(
+			tx,
+			Self {
+				initial_tasks,
+				logs,
+				transactions: transactions.into(),
+				rpc: rpc.into(),
+				resubmission_queue,
+				done: Default::default(),
+				errors: Default::default(),
+				stop_rx: rx,
+			},
+		)
 	}
 
 	fn pop(&mut self) -> Option<T> {
-		self.resubmission_queue.pop().or_else(|| self.transactions.pop())
+		trace!(target:LOG_TARGET, "before pop");
+		let r = self.resubmission_queue.pop().or_else(|| self.transactions.pop());
+		trace!(target:LOG_TARGET, "after pop");
+		r
 	}
 
-	// pub async fn run_poc3(&mut self) {
-	//     join(self.resubmission_queue.run(), self.run_poc2()).await;
-	// }
+	pub fn consume_pending(
+		&mut self,
+		workers: &mut FuturesUnordered<Pin<Box<dyn Future<Output = ExecutionResult<T>> + Send>>>,
+	) {
+		loop {
+			let task = self.pop();
+
+			if let Some(task) = task {
+				let hash = task.tx().hash();
+				let log = self.logs[&task.tx().hash()].clone();
+				log.push_event(ExecutionEvent::popped());
+				info!(target:LOG_TARGET,hash = ?hash, workers_len=workers.len(), "before push");
+				workers.push(task.execute(log, self.rpc.clone()));
+				info!(target:LOG_TARGET,hash = ?hash, workers_len=workers.len(), "after push");
+			} else {
+				break;
+			};
+			if workers.len() == self.initial_tasks {
+				break
+			}
+		}
+	}
 
 	pub async fn run_poc2(&mut self) {
 		let mut workers = FuturesUnordered::new();
@@ -253,17 +287,16 @@ where
 
 		loop {
 			select! {
+				_ = self.stop_rx.recv() => {
+							self.resubmission_queue.forced_terminate();
+					info!("received termination request");
+					break;
+				}
 				done = workers.next() => {
 					match done {
 						Some(result) => {
-							let task = self.pop();
-
-							if let Some(task) = task {
-								let log = self.logs[&task.tx().hash()].clone();
-								log.push_event(ExecutionEvent::popped());
-								workers.push(task.execute(log, self.rpc.clone()));
-							}
 							info!(target:LOG_TARGET,?result, workers_len=workers.len(), "FINISHED");
+							self.consume_pending(&mut workers);
 
 							match result {
 								ExecutionResult::NeedsResubmit(reason, t) => {
@@ -288,13 +321,7 @@ where
 								info!(target:LOG_TARGET,"done");
 								break;
 							}
-							let task = self.pop();
-							if let Some(task) = task {
-								let log = self.logs[&task.tx().hash()].clone();
-								log.push_event(ExecutionEvent::popped());
-								workers.push(task.execute(log, self.rpc.clone()));
-							}
-							// break;
+							self.consume_pending(&mut workers);
 						}
 					}
 				}

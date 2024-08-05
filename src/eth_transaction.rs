@@ -1,5 +1,6 @@
 use crate::{
 	error::Error,
+	subxt_transaction::{AccountIdOf, EthRuntimeConfig, HashOf},
 	transaction::{
 		AccountMetadata, ResubmitHandler, Transaction, TransactionStatus, TransactionsSink,
 	},
@@ -19,19 +20,6 @@ use subxt_signer::eth::{dev, AccountId20, Keypair as EthKeypair, Signature};
 use tracing::{info, trace};
 
 const LOG_TARGET: &str = "eth_tx";
-
-pub enum EthRuntimeConfig {}
-impl subxt::Config for EthRuntimeConfig {
-	type Hash = subxt::utils::H256;
-	type AccountId = AccountId20;
-	type Address = AccountId20;
-	type Signature = Signature;
-	type Hasher = subxt::config::substrate::BlakeTwo256;
-	type Header =
-		subxt::config::substrate::SubstrateHeader<u32, subxt::config::substrate::BlakeTwo256>;
-	type ExtrinsicParams = subxt::config::SubstrateExtrinsicParams<Self>;
-	type AssetId = u32;
-}
 
 pub struct EthTransaction {
 	extrinsic: SubmittableExtrinsic<EthRuntimeConfig, OnlineClient<EthRuntimeConfig>>,
@@ -71,9 +59,6 @@ impl ResubmitHandler for EthTransaction {
 		Some(self)
 	}
 }
-
-pub type HashOf<C> = <C as subxt::Config>::Hash;
-type AccountIdOf<C> = <C as subxt::Config>::AccountId;
 
 type StreamOf<I> = Pin<Box<dyn futures::Stream<Item = I> + Send>>;
 

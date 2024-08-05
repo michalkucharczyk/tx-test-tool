@@ -4,21 +4,24 @@
 
 use async_trait::async_trait;
 use cli::{ChainType, SendingScenario};
-use eth_transaction::{build_eth_tx, EthTransaction, EthTransactionsSink, HashOf};
+// use eth_transaction::{build_eth_tx, EthTransaction, EthTransactionsSink};
 use fake_transaction::{FakeHash, FakeTransaction};
 use fake_transaction_sink::FakeTransactionSink;
-use futures::future::join;
+use futures::{executor::block_on, future::join};
 use jsonrpsee::core::client::TransportSenderT;
 use resubmission::DefaultResubmissionQueue;
 use runner::{DefaultTxTask, FakeTxTask, Runner, TxTask};
 use std::{any::Any, marker::PhantomData};
 use subxt::{config::BlockHash, tx::Signer};
-use subxt_transaction::{SubxtTransactionsSink, TransactionSubxt};
+use subxt_transaction::{
+	build_subxt_tx, EthTransaction, EthTransactionsSink, HashOf, SubxtTransactionsSink,
+	TransactionSubxt,
+};
 use tracing::{debug, info, trace};
 
 mod cli;
 mod error;
-mod eth_transaction;
+// mod eth_transaction;
 mod execution_log;
 mod fake_transaction;
 mod fake_transaction_sink;
@@ -30,7 +33,10 @@ mod transaction;
 use clap::Parser;
 use transaction::{ResubmitHandler, Transaction, TransactionsSink};
 
-use crate::{cli::CliCommand, subxt_transaction::EthRuntimeConfig};
+use crate::{
+	cli::CliCommand,
+	subxt_transaction::{generate_ecdsa_keypair, EthRuntimeConfig},
+};
 
 fn init_logger() {
 	use std::sync::Once;
@@ -80,11 +86,20 @@ impl TransactionBuilder for FakeTransactionBuilder {
 		&self,
 		account: &String,
 		nonce: &Option<u128>,
-		_: &FakeTransactionSink,
+		sink: &FakeTransactionSink,
 	) -> DefaultTxTask<FakeTransaction> {
-		let i = account.parse::<u32>().unwrap();
+		let mut nonces = sink.nonces.write();
+		let nonce = if let Some(nonce) = nonces.get_mut(&hex::encode(account.clone())) {
+			*nonce = *nonce + 1;
+			*nonce
+		} else {
+			nonces.insert(hex::encode(account.clone()), 0);
+			0
+		};
+		let i = account.parse::<u32>().expect("Account shall be valid integer");
 		DefaultTxTask::<FakeTransaction>::new_watched(FakeTransaction::new_droppable_2nd_success(
-			i, 0,
+			i + (nonce << 16) as u32,
+			1000,
 		))
 		// FakeTransaction::new_droppable_2nd_success(i, 0)
 	}
@@ -109,8 +124,7 @@ impl TransactionBuilder for EthTransactionBuilder {
 		nonce: &Option<u128>,
 		sink: &EthTransactionsSink,
 	) -> DefaultTxTask<EthTransaction> {
-		DefaultTxTask::<EthTransaction>::new_watched(build_eth_tx(account, nonce, sink).await)
-		// FakeTransaction::new_droppable_2nd_success(i, 0)
+		DefaultTxTask::<EthTransaction>::new_watched(build_subxt_tx(account, nonce, sink).await)
 	}
 }
 
@@ -119,19 +133,6 @@ impl FakeTransactionBuilder {
 		Self {}
 	}
 }
-
-//
-// fn generate_transactions(
-// 	scenario: TxCommands,
-// 	chain_type: ChainType,
-// ) -> Vec<Box<dyn GeneratedTransaction>> {
-// 	let rpc = FakeTransactionSink::new();
-// 	let transactions = (0..100000)
-// 		.map(|i| FakeTxTask::new_watched(FakeTransaction::new_droppable_2nd_success(i, 0)))
-// 		// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
-// 		.collect::<Vec<_>>();
-// 	vec![]
-// }
 
 async fn execute_scenario<
 	H: BlockHash + 'static,
@@ -146,20 +147,43 @@ async fn execute_scenario<
 	let transactions = match scenario {
 		SendingScenario::OneShot { account, nonce } =>
 			vec![builder.build_transaction(account, nonce, &sink).await],
+		SendingScenario::FromManyAccounts {
+			start_id: Some(start_id),
+			last_id: Some(last_id),
+			..
+		} => {
+			let transactions = vec![];
+			transactions
+		},
+		SendingScenario::FromSingleAccount { account, from, count } => {
+			let mut transactions = vec![];
+			let mut nonce = *from;
+
+			for i in 0..*count {
+				transactions.push(builder.build_transaction(account, &nonce, &sink).await);
+				nonce = nonce.map(|n| n + 1);
+			}
+			transactions
+		},
 		_ => {
 			todo!()
 		},
 	};
 
+	let transactions = transactions.into_iter().rev().collect();
 	// let transactions = tx_command.generate_transactions(cli);
 	let (queue, queue_task) = DefaultResubmissionQueue::new();
-	let mut r = Runner::<DefaultTxTask<T>, S, DefaultResubmissionQueue<DefaultTxTask<T>>>::new(
-		100000,
-		sink,
-		transactions,
-		queue,
-	);
-	join(queue_task, r.run_poc2()).await;
+	let (stop_runner_tx, mut runner) = Runner::<
+		DefaultTxTask<T>,
+		S,
+		DefaultResubmissionQueue<DefaultTxTask<T>>,
+	>::new(100000, sink, transactions, queue);
+
+	ctrlc::set_handler(move || {
+		block_on(stop_runner_tx.send(())).expect("Could not send signal on channel.")
+	})
+	.expect("Error setting Ctrl-C handler");
+	join(queue_task, runner.run_poc2()).await;
 }
 
 fn send_loop() {}
@@ -187,7 +211,13 @@ async fn main() {
 					execute_scenario(sink, builder, scenario).await;
 				},
 				ChainType::Eth => {
-					let sink = EthTransactionsSink::new().await;
+					let def = scenario.get_accounts_description();
+					let sink = EthTransactionsSink::new_with_uri_with_accounts_description(
+						ws,
+						def,
+						generate_ecdsa_keypair,
+					)
+					.await;
 					let builder = EthTransactionBuilder::new();
 					execute_scenario(sink, builder, scenario).await;
 				},

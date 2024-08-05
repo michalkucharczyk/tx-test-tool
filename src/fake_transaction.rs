@@ -13,9 +13,10 @@ use std::{
 	time::Duration,
 };
 use subxt::ext::codec::{Decode, Encode};
+use tokio::task::yield_now;
 use tracing::trace;
 
-const LOG_TARGET: &str = "fake_tx";
+pub(crate) const LOG_TARGET: &str = "fake_tx";
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Encode, Decode)]
 #[serde(try_from = "String", into = "String")]
@@ -255,7 +256,8 @@ impl FakeTransaction {
 
 	pub fn events(&self) -> StreamOf<TransactionStatus<FakeHash>> {
 		let def = self.get_current_stream_def();
-		stream::unfold(def.0.into_iter(), move |mut i| async move {
+		stream::unfold(def.0.into_iter(), move |mut i| async {
+			yield_now().await;
 			if let Some(EventDef { event, delay }) = i.next() {
 				if delay > 0 {
 					tokio::time::sleep(Duration::from_millis(delay.into())).await;

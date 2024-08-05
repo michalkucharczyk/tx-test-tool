@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
@@ -76,7 +78,7 @@ pub enum SendingScenario {
 		#[clap(long, default_value = "alice")]
 		account: String,
 		/// Nonce used for the account.
-		#[clap(long, default_value = "0")]
+		#[clap(long)]
 		nonce: Option<u128>,
 	},
 	/// Send multiple transactions to the node using a single account.
@@ -85,13 +87,13 @@ pub enum SendingScenario {
 		/// pre-funded account, index used for derivation.
 		#[clap(long, default_value = "alice")]
 		account: String,
-		/// Starting nonce of transactions batch. If not given the current nonce for the account
-		/// will be fetched from node.
+		/// Starting nonce for 1st transaction in the batch. If not given the current nonce for
+		/// the account will be fetched from node for the first transaction in the batch.
 		#[clap(long)]
 		from: Option<u128>,
 		/// Number of transaction in the batch.
-		#[clap(long, conflicts_with_all(&["from","to"]))]
-		count: Option<u32>,
+		#[clap(long)]
+		count: u32,
 	},
 	/// Send multiple transactions to the node using multiple accounts.
 	FromManyAccounts {
@@ -102,14 +104,44 @@ pub enum SendingScenario {
 		/// Last account identifier to be used.
 		#[clap(long)]
 		last_id: Option<u32>,
-		/// Starting nonce of transactions batch. If not given the current nonce for the account
+		/// Starting nonce of transactions batch. If not given the current nonce for each account
 		/// will be fetched from node.
 		#[clap(long)]
 		from: Option<u128>,
-		/// Number of transaction in the batch.
-		#[clap(long, conflicts_with_all(&["from","to"]))]
+		/// Number of transaction in the batch per account.
+		#[clap(long)]
 		count: Option<u32>,
 	},
+}
+
+#[derive(Debug, Clone)]
+pub enum AccountsDescription {
+	Keyring(String),
+	Derived(Range<u32>),
+}
+
+impl SendingScenario {
+	pub fn get_accounts_description(&self) -> AccountsDescription {
+		match self {
+			Self::OneShot { account, .. } =>
+				if let Ok(id) = account.parse::<u32>() {
+					AccountsDescription::Derived(id..id + 1)
+				} else {
+					AccountsDescription::Keyring(account.clone())
+				},
+			Self::FromManyAccounts { start_id: Some(start_id), last_id: Some(last_id), .. } =>
+				AccountsDescription::Derived(*start_id..last_id + 1),
+			Self::FromSingleAccount { account, .. } =>
+				if let Ok(id) = account.parse::<u32>() {
+					AccountsDescription::Derived(id..id + 1)
+				} else {
+					AccountsDescription::Keyring(account.clone())
+				},
+			_ => {
+				todo!()
+			},
+		}
+	}
 }
 
 #[derive(ValueEnum, Clone)]
