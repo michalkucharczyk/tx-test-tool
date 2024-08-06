@@ -15,7 +15,7 @@ use std::{any::Any, marker::PhantomData};
 use subxt::{config::BlockHash, tx::Signer, PolkadotConfig};
 use subxt_transaction::{
 	build_eth_tx_payload, build_substrate_tx_payload, build_subxt_tx, EthTransaction,
-	EthTransactionsSink, HashOf, SubstrateTransaction, SubxtTransactionsSink, TransactionSubxt,
+	EthTransactionsSink, HashOf, SubstrateTransaction, SubxtTransaction, SubxtTransactionsSink,
 };
 use tracing::{debug, info, trace};
 
@@ -177,14 +177,6 @@ async fn execute_scenario<
 	let transactions = match scenario {
 		SendingScenario::OneShot { account, nonce } =>
 			vec![builder.build_transaction(account, nonce, &sink).await],
-		SendingScenario::FromManyAccounts {
-			start_id: Some(start_id),
-			last_id: Some(last_id),
-			..
-		} => {
-			let transactions = vec![];
-			transactions
-		},
 		SendingScenario::FromSingleAccount { account, from, count } => {
 			let mut transactions = vec![];
 			let mut nonce = *from;
@@ -195,8 +187,18 @@ async fn execute_scenario<
 			}
 			transactions
 		},
-		_ => {
-			todo!()
+		SendingScenario::FromManyAccounts { start_id, last_id, from, count } => {
+			let mut transactions = vec![];
+
+			for account in *start_id..*last_id {
+				let mut nonce = *from;
+				for i in 0..*count {
+					transactions
+						.push(builder.build_transaction(&account.to_string(), &nonce, &sink).await);
+					nonce = nonce.map(|n| n + 1);
+				}
+			}
+			transactions
 		},
 	};
 

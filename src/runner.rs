@@ -343,7 +343,7 @@ mod tests {
 		init_logger,
 		runner::{DefaultResubmissionQueue, FakeTxTask},
 		subxt_api_connector,
-		subxt_transaction::{EthRuntimeConfig, SubxtTransactionsSink, TransactionEth},
+		subxt_transaction::{EthRuntimeConfig, EthTransaction, SubxtTransactionsSink},
 		transaction::AccountMetadata,
 	};
 	use futures::future::join;
@@ -378,9 +378,9 @@ mod tests {
 		join(queue_task, r.run_poc2()).await;
 	}
 
-	type SubxtEthTxTask = DefaultTxTask<TransactionEth>;
+	type SubxtEthTxTask = DefaultTxTask<EthTransaction>;
 
-	fn make_subxt_transaction(api: &OnlineClient<EthRuntimeConfig>, nonce: u64) -> TransactionEth {
+	fn make_subxt_transaction(api: &OnlineClient<EthRuntimeConfig>, nonce: u64) -> EthTransaction {
 		let alith = dev::alith();
 		let baltathar = dev::baltathar();
 
@@ -402,7 +402,7 @@ mod tests {
 			],
 		);
 
-		let tx = TransactionEth::new(
+		let tx = EthTransaction::new(
 			api.tx().create_signed_offline(&tx_call, &baltathar, tx_params).unwrap(),
 			nonce as u128,
 			AccountMetadata::KeyRing("baltathar".to_string()),
@@ -433,9 +433,9 @@ mod tests {
 		let (queue, queue_task) = DefaultResubmissionQueue::new();
 
 		let mut r = Runner::<
-			DefaultTxTask<TransactionEth>,
+			DefaultTxTask<EthTransaction>,
 			SubxtTransactionsSink<EthRuntimeConfig>,
-			DefaultResubmissionQueue<DefaultTxTask<TransactionEth>>,
+			DefaultResubmissionQueue<DefaultTxTask<EthTransaction>>,
 		>::new(10_000, rpc, transactions, queue);
 		join(queue_task, r.run_poc2()).await;
 	}

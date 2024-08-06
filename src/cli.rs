@@ -100,17 +100,17 @@ pub enum SendingScenario {
 		/// First account identifier to be used (index of the pre-funded account used for a
 		/// derivation).
 		#[clap(long)]
-		start_id: Option<u32>,
+		start_id: u32,
 		/// Last account identifier to be used.
 		#[clap(long)]
-		last_id: Option<u32>,
+		last_id: u32,
 		/// Starting nonce of transactions batch. If not given the current nonce for each account
 		/// will be fetched from node.
 		#[clap(long)]
 		from: Option<u128>,
 		/// Number of transaction in the batch per account.
 		#[clap(long)]
-		count: Option<u32>,
+		count: u32,
 	},
 }
 
@@ -129,7 +129,7 @@ impl SendingScenario {
 				} else {
 					AccountsDescription::Keyring(account.clone())
 				},
-			Self::FromManyAccounts { start_id: Some(start_id), last_id: Some(last_id), .. } =>
+			Self::FromManyAccounts { start_id, last_id, .. } =>
 				AccountsDescription::Derived(*start_id..last_id + 1),
 			Self::FromSingleAccount { account, .. } =>
 				if let Ok(id) = account.parse::<u32>() {
@@ -137,9 +137,6 @@ impl SendingScenario {
 				} else {
 					AccountsDescription::Keyring(account.clone())
 				},
-			_ => {
-				todo!()
-			},
 		}
 	}
 }
