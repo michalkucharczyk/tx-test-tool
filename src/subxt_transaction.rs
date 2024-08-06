@@ -15,11 +15,15 @@ use subxt::{
 		CheckNonceParams,
 	},
 	dynamic::{At, Value},
-	tx::{Signer, SubmittableExtrinsic},
+	ext::sp_core::{sr25519::Pair as _, Pair},
+	tx::{DynamicPayload, Signer, SubmittableExtrinsic},
 	OnlineClient, PolkadotConfig,
 };
 use subxt_core::config::SubstrateExtrinsicParamsBuilder;
-use subxt_signer::eth::{dev, AccountId20, Keypair as EthKeypair, Signature};
+use subxt_signer::{
+	eth::{dev as eth_dev, AccountId20, Keypair as EthKeypair, Signature},
+	sr25519::{dev as sr25519_dev, Keypair as SrPair},
+};
 use tracing::{debug, info, trace};
 
 const LOG_TARGET: &str = "subxt_tx";
@@ -48,6 +52,8 @@ pub struct TransactionSubxt<C: subxt::Config> {
 
 pub type EthTransaction = TransactionSubxt<EthRuntimeConfig>;
 pub type EthTransactionsSink = SubxtTransactionsSink<EthRuntimeConfig, EthKeypair>;
+pub type SubstrateTransaction = TransactionSubxt<PolkadotConfig>;
+pub type SubstrateTransactionsSink = SubxtTransactionsSink<PolkadotConfig, SrPair>;
 
 impl<C: subxt::Config> TransactionSubxt<C> {
 	pub fn new(
@@ -127,7 +133,7 @@ where
 		generate_pair: G,
 	) -> Self
 	where
-		G: Fn(&String) -> KP + Copy + Send + 'static,
+		G: GenerateKeyPairFunction<KP>,
 	{
 		let from_accounts =
 			derive_accounts(accounts_description.clone(), &SENDER_SEED, generate_pair);
@@ -236,20 +242,49 @@ const SENDER_SEED: &str = "//Sender";
 const RECEIVER_SEED: &str = "//Receiver";
 const SEED: &str = "bottom drive obey lake curtain smoke basket hold race lonely fit walk";
 
-pub fn generate_ecdsa_keypair(derivation: &String) -> EthKeypair {
+pub fn generate_ecdsa_keypair(derivation: &String, i: Option<usize>) -> EthKeypair {
 	match derivation.as_str() {
-		"alice" | "alith" => dev::alith(),
-		"bob" | "baltathar" => dev::baltathar(),
-		"charlie" | "charleth" => dev::charleth(),
-		"dave" | "dorothy" => dev::dorothy(),
-		"eve" | "ethan" => dev::ethan(),
-		"ferdie" | "faith" => dev::faith(),
+		"alice" | "alith" => eth_dev::alith(),
+		"bob" | "baltathar" => eth_dev::baltathar(),
+		"charlie" | "charleth" => eth_dev::charleth(),
+		"dave" | "dorothy" => eth_dev::dorothy(),
+		"eve" | "ethan" => eth_dev::ethan(),
+		"ferdie" | "faith" => eth_dev::faith(),
 		_ => {
 			use std::str::FromStr;
+			let i = i.expect("key derivation index shall be given");
+			let derivation = format!("{derivation}//{i}");
 			let u = subxt_signer::SecretUri::from_str(&derivation).unwrap();
 			<subxt_signer::ecdsa::Keypair>::from_uri(&u).unwrap().into()
 		},
 	}
+}
+pub fn generate_sr25519_keypair(derivation: &String, i: Option<usize>) -> SrPair {
+	match derivation.as_str() {
+		"alice" | "alith" => sr25519_dev::alice(),
+		"bob" | "baltathar" => sr25519_dev::bob(),
+		"charlie" | "charleth" => sr25519_dev::charlie(),
+		"dave" | "dorothy" => sr25519_dev::dave(),
+		"eve" | "ethan" => sr25519_dev::eve(),
+		"ferdie" | "faith" => sr25519_dev::ferdie(),
+		_ => {
+			use std::str::FromStr;
+			let i = i.expect("key derivation index shall be given");
+			let derivation = format!("{derivation}/{i}");
+			let u = subxt_signer::SecretUri::from_str(&derivation).unwrap();
+			<subxt_signer::sr25519::Keypair>::from_uri(&u).unwrap().into()
+			// <SrPair as Pair>::from_string(&derivation, None).unwrap().into()
+		},
+	}
+}
+
+pub trait GenerateKeyPairFunction<KP>:
+	Fn(&String, Option<usize>) -> KP + Copy + Send + 'static
+{
+}
+impl<T, KP> GenerateKeyPairFunction<KP> for T where
+	T: Fn(&String, Option<usize>) -> KP + Copy + Send + 'static
+{
 }
 
 pub fn derive_accounts<C, KP, G>(
@@ -260,7 +295,7 @@ pub fn derive_accounts<C, KP, G>(
 where
 	C: subxt::Config,
 	KP: Signer<C> + Send + Sync + 'static,
-	G: Fn(&String) -> KP + Copy + Send + 'static,
+	G: GenerateKeyPairFunction<KP>,
 {
 	match accounts_description {
 		AccountsDescription::Derived(range) => {
@@ -282,9 +317,9 @@ where
 					chunk
 						.into_iter()
 						.map(move |i| {
-							let derivation = format!("{SEED}{seed}//{i}");
+							let derivation = format!("{SEED}{seed}");
 							// info!("derivation: {thread_idx:} {derivation:?}");
-							(i.to_string(), generate(&derivation))
+							(i.to_string(), generate(&derivation, Some(i)))
 						})
 						.collect::<Vec<_>>()
 				}));
@@ -298,18 +333,50 @@ where
 				.collect()
 		},
 		AccountsDescription::Keyring(account) =>
-			HashMap::from([(account.clone(), generate(&account))]),
+			HashMap::from([(account.clone(), generate(&account, None))]),
 	}
 }
 
-pub async fn build_subxt_tx<C, KP>(
+pub trait GenerateTxPayloadFunction<A: Send + Sync + AsRef<[u8]>>:
+	Fn(A) -> DynamicPayload + Copy + Send + 'static
+{
+}
+
+impl<T, A: Send + Sync + AsRef<[u8]>> GenerateTxPayloadFunction<A> for T where
+	T: Fn(A) -> DynamicPayload + Copy + Send + 'static
+{
+}
+
+pub fn build_substrate_tx_payload(to_account_id: AccountIdOf<PolkadotConfig>) -> DynamicPayload {
+	subxt::dynamic::tx(
+		"Balances",
+		"transfer_keep_alive",
+		vec![
+			Value::unnamed_variant("Id", [Value::from_bytes(to_account_id)]),
+			Value::u128(1u32.into()),
+		],
+	)
+}
+
+pub fn build_eth_tx_payload(to_account_id: AccountId20) -> DynamicPayload {
+	subxt::dynamic::tx(
+		"Balances",
+		"transfer_keep_alive",
+		vec![
+			Value::unnamed_composite(vec![Value::from_bytes(to_account_id)]),
+			Value::u128(1u32.into()),
+		],
+	)
+}
+
+pub async fn build_subxt_tx<C, KP, G>(
 	account: &String,
 	nonce: &Option<u128>,
 	sink: &SubxtTransactionsSink<C, KP>,
+	generate_payload: G,
 ) -> TransactionSubxt<C>
 where
-	AccountIdOf<C>: Send + Sync,
-	AccountIdOf<C>: AsRef<[u8]>,
+	AccountIdOf<C>: Send + Sync + AsRef<[u8]>,
 	C: subxt::Config,
 	KP: Signer<C> + Clone + Send + Sync + 'static,
 	<<C as subxt::Config>::ExtrinsicParams as subxt::config::ExtrinsicParams<C>>::Params: From<(
@@ -322,8 +389,8 @@ where
 		ChargeTransactionPaymentParams,
 		(),
 	)>,
+	G: GenerateTxPayloadFunction<AccountIdOf<C>>,
 {
-	//todo:
 	let to_account_id = sink.get_to_account_id(account).expect("to account exists");
 	let from_account_id = sink.get_from_account_id(account).expect("from account exists");
 	let from_keypair = sink.get_from_key_pair(account).expect("from account exists");
@@ -340,18 +407,7 @@ where
 		nonce
 	};
 	let tx_params = <SubstrateExtrinsicParamsBuilder<C>>::new().nonce(nonce as u64).build().into();
-
-	let tx_call = subxt::dynamic::tx(
-		"Balances",
-		"transfer_keep_alive",
-		vec![
-			// // Substrate:
-			// Value::unnamed_variant("Id", [Value::from_bytes(receiver.public())]),
-			// Eth:
-			Value::unnamed_composite(vec![Value::from_bytes(to_account_id)]),
-			Value::u128(1u32.into()),
-		],
-	);
+	let tx_call = generate_payload(to_account_id);
 
 	let tx = TransactionSubxt::<C>::new(
 		sink.api()
@@ -359,6 +415,7 @@ where
 			.create_signed_offline(&tx_call, &from_keypair, tx_params)
 			.unwrap(),
 		nonce as u128,
+		//todo: clean this up
 		AccountMetadata::KeyRing("baltathar".to_string()),
 	);
 
@@ -386,8 +443,8 @@ mod tests {
 			.await
 			.unwrap();
 
-		let alith = dev::alith();
-		let baltathar = dev::baltathar();
+		let alith = eth_dev::alith();
+		let baltathar = eth_dev::baltathar();
 
 		let nonce = 0;
 		let tx_params = Params::new().nonce(nonce).build();
@@ -414,7 +471,7 @@ mod tests {
 
 		info!("tx hash: {:?}", tx.hash());
 
-		let sink = SubxtTransactionsSink::<EthRuntimeConfig>::new().await;
+		let sink = SubxtTransactionsSink::<EthRuntimeConfig, EthKeypair>::new().await;
 
 		let tx: Box<dyn Transaction<HashType = <EthRuntimeConfig as subxt::Config>::Hash>> =
 			Box::from(tx);

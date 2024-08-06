@@ -12,10 +12,10 @@ use jsonrpsee::core::client::TransportSenderT;
 use resubmission::DefaultResubmissionQueue;
 use runner::{DefaultTxTask, FakeTxTask, Runner, TxTask};
 use std::{any::Any, marker::PhantomData};
-use subxt::{config::BlockHash, tx::Signer};
+use subxt::{config::BlockHash, tx::Signer, PolkadotConfig};
 use subxt_transaction::{
-	build_subxt_tx, EthTransaction, EthTransactionsSink, HashOf, SubxtTransactionsSink,
-	TransactionSubxt,
+	build_eth_tx_payload, build_substrate_tx_payload, build_subxt_tx, EthTransaction,
+	EthTransactionsSink, HashOf, SubstrateTransaction, SubxtTransactionsSink, TransactionSubxt,
 };
 use tracing::{debug, info, trace};
 
@@ -35,7 +35,10 @@ use transaction::{ResubmitHandler, Transaction, TransactionsSink};
 
 use crate::{
 	cli::CliCommand,
-	subxt_transaction::{generate_ecdsa_keypair, EthRuntimeConfig},
+	subxt_transaction::{
+		generate_ecdsa_keypair, generate_sr25519_keypair, EthRuntimeConfig,
+		SubstrateTransactionsSink,
+	},
 };
 
 fn init_logger() {
@@ -86,8 +89,8 @@ impl TransactionBuilder for FakeTransactionBuilder {
 		&self,
 		account: &String,
 		nonce: &Option<u128>,
-		sink: &FakeTransactionSink,
-	) -> DefaultTxTask<FakeTransaction> {
+		sink: &Self::Sink,
+	) -> DefaultTxTask<Self::Transaction> {
 		let mut nonces = sink.nonces.write();
 		let nonce = if let Some(nonce) = nonces.get_mut(&hex::encode(account.clone())) {
 			*nonce = *nonce + 1;
@@ -102,6 +105,31 @@ impl TransactionBuilder for FakeTransactionBuilder {
 			1000,
 		))
 		// FakeTransaction::new_droppable_2nd_success(i, 0)
+	}
+}
+
+struct SubstrateTransactionBuilder {}
+
+impl SubstrateTransactionBuilder {
+	fn new() -> Self {
+		Self {}
+	}
+}
+
+#[async_trait]
+impl TransactionBuilder for SubstrateTransactionBuilder {
+	type HashType = HashOf<PolkadotConfig>;
+	type Transaction = SubstrateTransaction;
+	type Sink = SubstrateTransactionsSink;
+	async fn build_transaction(
+		&self,
+		account: &String,
+		nonce: &Option<u128>,
+		sink: &Self::Sink,
+	) -> DefaultTxTask<Self::Transaction> {
+		DefaultTxTask::<Self::Transaction>::new_watched(
+			build_subxt_tx(account, nonce, sink, build_substrate_tx_payload).await,
+		)
 	}
 }
 
@@ -122,9 +150,11 @@ impl TransactionBuilder for EthTransactionBuilder {
 		&self,
 		account: &String,
 		nonce: &Option<u128>,
-		sink: &EthTransactionsSink,
-	) -> DefaultTxTask<EthTransaction> {
-		DefaultTxTask::<EthTransaction>::new_watched(build_subxt_tx(account, nonce, sink).await)
+		sink: &Self::Sink,
+	) -> DefaultTxTask<Self::Transaction> {
+		DefaultTxTask::<Self::Transaction>::new_watched(
+			build_subxt_tx(account, nonce, sink, build_eth_tx_payload).await,
+		)
 	}
 }
 
@@ -221,8 +251,16 @@ async fn main() {
 					let builder = EthTransactionBuilder::new();
 					execute_scenario(sink, builder, scenario).await;
 				},
-				_ => {
-					todo!()
+				ChainType::Sub => {
+					let def = scenario.get_accounts_description();
+					let sink = SubstrateTransactionsSink::new_with_uri_with_accounts_description(
+						ws,
+						def,
+						generate_sr25519_keypair,
+					)
+					.await;
+					let builder = SubstrateTransactionBuilder::new();
+					execute_scenario(sink, builder, scenario).await;
 				},
 			};
 		},
