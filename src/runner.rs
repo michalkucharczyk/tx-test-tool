@@ -108,8 +108,8 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 			Ok(mut stream) => {
 				log.push_event(ExecutionEvent::submit_and_watch_result(Ok(())));
 				while let Some(status) = stream.next().await {
-					yield_now().await;
-					debug!(hash=?self.tx().hash(),"status: {status:?}");
+					// yield_now().await;
+					debug!(target:LOG_TARGET,hash=?self.tx().hash(),"status: {status:?}");
 					log.push_event(status.clone().into());
 					if status.is_finalized() {
 						return ExecutionResult::Done(self.tx().hash());
@@ -251,8 +251,11 @@ where
 		workers: &mut FuturesUnordered<Pin<Box<dyn Future<Output = ExecutionResult<T>> + Send>>>,
 	) {
 		loop {
-			let task = self.pop();
+			if workers.len() >= self.initial_tasks {
+				break
+			}
 
+			let task = self.pop();
 			if let Some(task) = task {
 				let hash = task.tx().hash();
 				let log = self.logs[&task.tx().hash()].clone();
@@ -263,9 +266,6 @@ where
 			} else {
 				break;
 			};
-			if workers.len() == self.initial_tasks {
-				break
-			}
 		}
 	}
 
@@ -287,8 +287,11 @@ where
 
 		loop {
 			select! {
+				_ = tokio::time::sleep(Duration::from_millis(1000)) => {
+							self.consume_pending(&mut workers);
+				}
 				_ = self.stop_rx.recv() => {
-							self.resubmission_queue.forced_terminate();
+					self.resubmission_queue.forced_terminate();
 					info!("received termination request");
 					break;
 				}
@@ -312,12 +315,14 @@ where
 								}
 
 							}
+
+							trace!(target:LOG_TARGET, "after match");
 						}
 						None => {
 							trace!(target:LOG_TARGET,"all futures done");
 							tokio::time::sleep(Duration::from_millis(100)).await;
-							self.resubmission_queue.terminate();
 							if self.resubmission_queue.is_empty().await {
+								self.resubmission_queue.terminate();
 								info!(target:LOG_TARGET,"done");
 								break;
 							}
@@ -330,7 +335,7 @@ where
 
 		// info!("logs {:#?}", self.logs);
 		Journal::<T>::save_logs(self.logs.clone());
-		make_stats(self.logs.values().cloned())
+		make_stats(self.logs.values().cloned(), false)
 	}
 }
 
@@ -343,7 +348,9 @@ mod tests {
 		init_logger,
 		runner::{DefaultResubmissionQueue, FakeTxTask},
 		subxt_api_connector,
-		subxt_transaction::{EthRuntimeConfig, EthTransaction, SubxtTransactionsSink},
+		subxt_transaction::{
+			EthRuntimeConfig, EthTransaction, EthTransactionsSink, SubxtTransactionsSink,
+		},
 		transaction::AccountMetadata,
 	};
 	use futures::future::join;
@@ -370,7 +377,7 @@ mod tests {
 
 		let (queue, queue_task) = DefaultResubmissionQueue::new();
 
-		let mut r = Runner::<
+		let (_c, mut r) = Runner::<
 			DefaultTxTask<FakeTransaction>,
 			FakeTransactionSink,
 			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
@@ -378,9 +385,12 @@ mod tests {
 		join(queue_task, r.run_poc2()).await;
 	}
 
-	type SubxtEthTxTask = DefaultTxTask<EthTransaction>;
+	type EthTestTxTask = DefaultTxTask<EthTransaction>;
 
-	fn make_subxt_transaction(api: &OnlineClient<EthRuntimeConfig>, nonce: u64) -> EthTransaction {
+	fn make_eth_test_transaction(
+		api: &OnlineClient<EthRuntimeConfig>,
+		nonce: u64,
+	) -> EthTransaction {
 		let alith = dev::alith();
 		let baltathar = dev::baltathar();
 
@@ -422,19 +432,19 @@ mod tests {
 		//     .unwrap();
 		let api = subxt_api_connector::connect("ws://127.0.0.1:9933").await.unwrap();
 
-		let rpc = SubxtTransactionsSink::<EthRuntimeConfig>::new();
+		let rpc = EthTransactionsSink::new().await;
 
 		let transactions = (0..3000)
-			.map(|i| SubxtEthTxTask::new_watched(make_subxt_transaction(&api, i + 16000)))
+			.map(|i| EthTestTxTask::new_watched(make_eth_test_transaction(&api, i + 0)))
 			.rev()
 			// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
 			.collect::<Vec<_>>();
 
 		let (queue, queue_task) = DefaultResubmissionQueue::new();
 
-		let mut r = Runner::<
+		let (_c, mut r) = Runner::<
 			DefaultTxTask<EthTransaction>,
-			SubxtTransactionsSink<EthRuntimeConfig>,
+			EthTransactionsSink,
 			DefaultResubmissionQueue<DefaultTxTask<EthTransaction>>,
 		>::new(10_000, rpc, transactions, queue);
 		join(queue_task, r.run_poc2()).await;
@@ -452,7 +462,7 @@ mod tests {
 
 		let (queue, queue_task) = DefaultResubmissionQueue::new();
 
-		let mut r = Runner::<
+		let (_, mut r) = Runner::<
 			DefaultTxTask<FakeTransaction>,
 			FakeTransactionSink,
 			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
@@ -464,6 +474,6 @@ mod tests {
 	async fn read_json() {
 		init_logger();
 		let logs = Journal::<DefaultTxTask<FakeTransaction>>::load_logs("out_20240801_164155.json");
-		make_stats(logs.values().cloned());
+		make_stats(logs.values().cloned(), true);
 	}
 }

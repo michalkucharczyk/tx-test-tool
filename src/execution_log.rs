@@ -150,7 +150,7 @@ impl<H: BlockHash + 'static> ExecutionLog for DefaultExecutionLog<H> {
 	type HashType = H;
 
 	fn push_event(&self, event: ExecutionEvent<Self::HashType>) {
-		trace!(target:LOG_TARGET, ?event, "B push_event");
+		info!(target:LOG_TARGET, ?event, "B push_event");
 		self.events.write().push(event);
 		trace!(target:LOG_TARGET, "A push_event");
 	}
@@ -314,6 +314,7 @@ pub fn single_stat<'a, E: ExecutionLog + 'a>(
 	name: String,
 	logs: impl Iterator<Item = &'a Arc<E>>,
 	method: fn(&E) -> Option<Duration>,
+	show_graph: bool,
 ) {
 	let mut v: Vec<f64> = vec![];
 	for l in logs {
@@ -337,16 +338,18 @@ pub fn single_stat<'a, E: ExecutionLog + 'a>(
 		"{name}"
 	);
 
-	// use termplot::*;
-	// let mut plot = Plot::default();
-	// plot.set_domain(Domain(min.min()..max.max()))
-	// 	.set_codomain(Domain(0.0..mean.len() as f64))
-	// 	.set_title(&name)
-	// 	.set_x_label("X axis")
-	// 	.set_y_label("Y axis")
-	// 	.set_size(Size::new(80, 45))
-	// 	.add_plot(Box::new(plot::Histogram::new_with_buckets_count(v, 20)));
-	// println!("{plot}");
+	if show_graph {
+		use termplot::*;
+		let mut plot = Plot::default();
+		plot.set_domain(Domain(min.min()..max.max()))
+			.set_codomain(Domain(0.0..mean.len() as f64))
+			.set_title(&name)
+			.set_x_label("X axis")
+			.set_y_label("Y axis")
+			.set_size(Size::new(80, 45))
+			.add_plot(Box::new(plot::Histogram::new_with_buckets_count(v, 20)));
+		println!("{plot}");
+	}
 }
 
 pub fn failure_reason_stats<'a, E: ExecutionLog + 'a>(
@@ -366,19 +369,19 @@ pub fn failure_reason_stats<'a, E: ExecutionLog + 'a>(
 		?map, "{name} -> {:#?}", map);
 }
 
-pub fn make_stats<E: ExecutionLog>(logs: impl IntoIterator<Item = Arc<E>>) {
+pub fn make_stats<E: ExecutionLog>(logs: impl IntoIterator<Item = Arc<E>>, show_graphs: bool) {
 	let logs = logs.into_iter().collect::<Vec<_>>();
 	info!(total_count = logs.iter().count());
-	single_stat("Time to dropped".into(), logs.iter(), E::time_to_dropped);
-	single_stat("Time to error".into(), logs.iter(), E::time_to_error);
-	single_stat("Time to invalid".into(), logs.iter(), E::time_to_invalid);
+	single_stat("Time to dropped".into(), logs.iter(), E::time_to_dropped, show_graphs);
+	single_stat("Time to error".into(), logs.iter(), E::time_to_error, show_graphs);
+	single_stat("Time to invalid".into(), logs.iter(), E::time_to_invalid, show_graphs);
 
-	single_stat("Time to result".into(), logs.iter(), E::time_to_result);
-	single_stat("Time to validated".into(), logs.iter(), E::time_to_validated);
-	single_stat("Time to broadcasted".into(), logs.iter(), E::time_to_broadcasted);
-	single_stat("Time to in_block".into(), logs.iter(), E::time_to_inblock);
-	single_stat("Time to finalization".into(), logs.iter(), E::time_to_finalized);
-	single_stat("Time to resubmitted".into(), logs.iter(), E::time_to_resubmitted);
+	single_stat("Time to result".into(), logs.iter(), E::time_to_result, show_graphs);
+	single_stat("Time to validated".into(), logs.iter(), E::time_to_validated, show_graphs);
+	single_stat("Time to broadcasted".into(), logs.iter(), E::time_to_broadcasted, show_graphs);
+	single_stat("Time to in_block".into(), logs.iter(), E::time_to_inblock, show_graphs);
+	single_stat("Time to finalization".into(), logs.iter(), E::time_to_finalized, show_graphs);
+	single_stat("Time to resubmitted".into(), logs.iter(), E::time_to_resubmitted, show_graphs);
 
 	failure_reason_stats("Dropped".into(), logs.iter(), E::get_dropped_reason);
 	failure_reason_stats("Error".into(), logs.iter(), E::get_error_reason);
@@ -389,41 +392,6 @@ pub fn make_stats<E: ExecutionLog>(logs: impl IntoIterator<Item = Arc<E>>) {
 		logs.iter(),
 		E::get_submit_and_watch_result_error,
 	);
-
-	// let mut v: Vec<f64> = vec![];
-	// for l in logs {
-	// 	let time_to_finalized = l.time_to_finalized();
-	// 	if let Some(time_to_finalized) = time_to_finalized {
-	// 		v.push(time_to_finalized.as_secs_f64());
-	// 	}
-	// 	info!(?time_to_finalized);
-	// }
-	// use termplot::*;
-	// let mut plot = Plot::default();
-	// {
-	// 	let a: Mean = v.iter().collect();
-	// 	info!(?a);
-	// }
-	// {
-	// 	let a: Max = v.iter().collect();
-	// 	info!(?a);
-	// }
-	// {
-	// 	let a: Min = v.iter().collect();
-	// 	info!(?a);
-	// }
-	// let mut third_quartile = Quantile::new(0.75);
-	// v.iter().for_each(|x| third_quartile.add(*x));
-	// info!(q = third_quartile.quantile());
-	//
-	// plot.set_domain(Domain(0.0..1.0))
-	// 	.set_codomain(Domain(0.0..10.0))
-	// 	.set_title("Graph title")
-	// 	.set_x_label("X axis")
-	// 	.set_y_label("Y axis")
-	// 	.set_size(Size::new(50, 25))
-	// 	.add_plot(Box::new(plot::Histogram::new_with_buckets_count(v, 10)));
-	// println!("{plot}");
 }
 
 pub mod journal {

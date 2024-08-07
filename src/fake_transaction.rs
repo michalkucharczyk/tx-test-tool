@@ -196,6 +196,7 @@ impl FakeTransaction {
 			],
 		)
 	}
+
 	pub fn new_droppable_2nd_success(hash: u32, delay: u32) -> Self {
 		Self::new_multiple(
 			hash,
@@ -209,6 +210,19 @@ impl FakeTransaction {
 					EventDef::in_block(3, delay),
 					EventDef::finalized(2, delay),
 				]),
+			],
+		)
+	}
+
+	pub fn new_droppable_loop(hash: u32, delay: u32) -> Self {
+		Self::new_multiple(
+			hash,
+			vec![
+				EventsStreamDef(vec![EventDef::dropped(delay)]),
+				EventsStreamDef(vec![EventDef::dropped(delay)]),
+				EventsStreamDef(vec![EventDef::dropped(delay)]),
+				EventsStreamDef(vec![EventDef::dropped(delay)]),
+				EventsStreamDef(vec![EventDef::dropped(delay)]),
 			],
 		)
 	}

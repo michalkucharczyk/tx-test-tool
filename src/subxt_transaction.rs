@@ -95,8 +95,8 @@ type StreamOf<I> = Pin<Box<dyn futures::Stream<Item = I> + Send>>;
 
 pub struct SubxtTransactionsSink<C: subxt::Config, KP: Signer<C>> {
 	api: OnlineClient<C>,
-	from_accounts: Arc<RwLock<HashMap<String, KP>>>,
-	to_accounts: Arc<RwLock<HashMap<String, KP>>>,
+	from_accounts: Arc<RwLock<HashMap<String, (KP, AccountMetadata)>>>,
+	to_accounts: Arc<RwLock<HashMap<String, (KP, AccountMetadata)>>>,
 	nonces: Arc<RwLock<HashMap<String, u128>>>,
 }
 
@@ -150,19 +150,23 @@ where
 		self.api.clone()
 	}
 
-	fn get_from_account_id(&self, account: &String) -> Option<AccountIdOf<C>> {
-		self.from_accounts.read().get(account).map(|a| a.account_id())
+	pub fn get_from_account_id(&self, account: &String) -> Option<AccountIdOf<C>> {
+		self.from_accounts.read().get(account).map(|a| a.0.account_id())
 	}
 
 	fn get_to_account_id(&self, account: &String) -> Option<AccountIdOf<C>> {
-		self.to_accounts.read().get(account).map(|a| a.account_id())
+		self.to_accounts.read().get(account).map(|a| a.0.account_id())
+	}
+
+	fn get_to_account_metadata(&self, account: &String) -> Option<AccountMetadata> {
+		self.to_accounts.read().get(account).map(|a| a.1.clone())
 	}
 
 	fn get_from_key_pair(&self, account: &String) -> Option<KP> {
-		self.from_accounts.read().get(account).cloned()
+		self.from_accounts.read().get(account).map(|k| k.0.clone())
 	}
 
-	async fn check_account_nonce(
+	pub async fn check_account_nonce(
 		&self,
 		account: AccountIdOf<C>,
 	) -> Result<u128, Box<dyn std::error::Error>> {
@@ -170,31 +174,38 @@ where
 			*nonce = *nonce + 1;
 			return Ok(*nonce)
 		}
-
 		{
-			let storage_query = subxt::dynamic::storage(
-				"System",
-				"Account",
-				vec![Value::from_bytes(account.clone())],
-			);
-			let result = self.api.storage().at_latest().await?.fetch(&storage_query).await?;
-			let value = result
-				.ok_or(format!("Sender account {:?} shall exists", hex::encode(account.clone())))?
-				.to_value()?;
-
-			debug!(target:LOG_TARGET,"account has free balance: {:?}", value.at("data").at("free"));
-			debug!(target:LOG_TARGET,"account has nonce: {:?}", value.at("nonce"));
-			// info!("account has nonce: {:#?}", value);
-			let nonce = value
-				.at("nonce")
-				.expect("nonce shall be there")
-				.as_u128()
-				.expect("shall be u128");
-
+			let nonce = check_account_nonce(self.api.clone(), account.clone()).await?;
 			self.nonces.write().insert(hex::encode(account), nonce);
 			Ok(nonce)
 		}
 	}
+}
+
+pub async fn check_account_nonce<C: subxt::Config>(
+	api: OnlineClient<C>,
+	account: AccountIdOf<C>,
+) -> Result<u128, Box<dyn std::error::Error>>
+where
+	AccountIdOf<C>: Send + Sync + AsRef<[u8]>,
+{
+	let storage_query =
+		subxt::dynamic::storage("System", "Account", vec![Value::from_bytes(account.clone())]);
+	let result = api.storage().at_latest().await?.fetch(&storage_query).await?;
+	let value = result
+		.ok_or(format!("Sender account {:?} does not exist", hex::encode(account.clone())))?
+		.to_value()?;
+
+	debug!(target:LOG_TARGET,"account has free balance: {:?}", value.at("data").at("free"));
+	debug!(target:LOG_TARGET,"account has nonce: {:?}", value.at("nonce"));
+	// info!("account has nonce: {:#?}", value);
+	let nonce = value
+		.at("nonce")
+		.ok_or("nonce is not set for the account")?
+		.as_u128()
+		.ok_or("nonce is not u128")?;
+
+	Ok(nonce)
 }
 
 #[async_trait]
@@ -214,7 +225,7 @@ where
 		match result {
 			Ok(stream) => Ok(stream
 				.map(|e| {
-					// info!(evnt=?e, "TransactionsSinkSubxt::map");
+					// info!(evnt=?e, "SubxtTransactionsSink::map");
 					e.unwrap().into()
 				})
 				.boxed()),
@@ -298,7 +309,7 @@ pub fn derive_accounts<C, KP, G>(
 	accounts_description: AccountsDescription,
 	seed: &str,
 	generate: G,
-) -> HashMap<String, KP>
+) -> HashMap<String, (KP, AccountMetadata)>
 where
 	C: subxt::Config,
 	KP: Signer<C> + Send + Sync + 'static,
@@ -328,10 +339,13 @@ where
 							// info!("derivation: {thread_idx:} {derivation:?}");
 							(
 								i.to_string(),
-								generate(AccountGenerateRequest::Derived(
-									seed.to_string(),
-									i as u32,
-								)),
+								(
+									generate(AccountGenerateRequest::Derived(
+										seed.to_string(),
+										i as u32,
+									)),
+									AccountMetadata::Derived(i as u32),
+								),
 							)
 						})
 						.collect::<Vec<_>>()
@@ -345,8 +359,13 @@ where
 				// .map(|p| (p, funds))
 				.collect()
 		},
-		AccountsDescription::Keyring(account) =>
-			HashMap::from([(account.clone(), generate(AccountGenerateRequest::Keyring(account)))]),
+		AccountsDescription::Keyring(account) => HashMap::from([(
+			account.clone(),
+			(
+				generate(AccountGenerateRequest::Keyring(account.clone())),
+				AccountMetadata::KeyRing(account),
+			),
+		)]),
 	}
 }
 
@@ -409,25 +428,26 @@ where
 	let to_account_id = sink.get_to_account_id(account).expect("to account exists");
 	let from_account_id = sink.get_from_account_id(account).expect("from account exists");
 	let from_keypair = sink.get_from_key_pair(account).expect("from account exists");
-	trace!(
+	let nonce = if let Some(nonce) = nonce {
+		trace!("nonce for {:?} -> {:?}", account, nonce);
+		*nonce
+	} else {
+		let nonce = sink
+			.check_account_nonce(from_account_id.clone())
+			.await
+			.expect("account nonce shall exists");
+		trace!("checked nonce for {:?} -> {:?}", account, nonce);
+		nonce
+	};
+	debug!(
 		target:LOG_TARGET,
 		account,
-		from_account=hex::encode(from_account_id.clone()),
+		nonce,
+		from_account=hex::encode(from_account_id),
 		to_account=hex::encode(to_account_id.clone()),
 		"build_subxt_tx"
 	);
 
-	let nonce = if let Some(nonce) = nonce {
-		debug!("nonce for {:?} -> {:?}", account, nonce);
-		*nonce
-	} else {
-		let nonce = sink
-			.check_account_nonce(from_account_id)
-			.await
-			.expect("account nonce shall exists");
-		debug!("checked nonce for {:?} -> {:?}", account, nonce);
-		nonce
-	};
 	let tx_params = <SubstrateExtrinsicParamsBuilder<C>>::new().nonce(nonce as u64).build().into();
 	let tx_call = generate_payload(to_account_id);
 
@@ -437,8 +457,7 @@ where
 			.create_signed_offline(&tx_call, &from_keypair, tx_params)
 			.unwrap(),
 		nonce as u128,
-		//todo: clean this up
-		AccountMetadata::KeyRing("baltathar".to_string()),
+		sink.get_to_account_metadata(account).expect("account metadata exists"),
 	);
 
 	debug!(target:LOG_TARGET,"tx hash: {:?}", tx.hash());
@@ -468,7 +487,7 @@ mod tests {
 		let alith = eth_dev::alith();
 		let baltathar = eth_dev::baltathar();
 
-		let nonce = 0;
+		let nonce = 19000;
 		let tx_params = Params::new().nonce(nonce).build();
 
 		// let tx_call = subxt::dynamic::tx("System", "remark",

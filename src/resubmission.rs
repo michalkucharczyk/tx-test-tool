@@ -126,8 +126,9 @@ impl<T: TxTask + 'static> DefaultResubmissionQueue<T> {
 				};
 				if let Some(t) = task {
 					if let Some(t) = t {
-						trace!(target: LOG_TARGET, "M RUN-QUEUE {:?}", t.tx().hash());
-						self.ready_queue.write().push(t)
+						trace!(target: LOG_TARGET, "M B RUN-QUEUE {:?}", t.tx().hash());
+						self.ready_queue.write().push(t);
+						trace!(target: LOG_TARGET, "M A RUN-QUEUE");
 					}
 				}
 				trace!(target: LOG_TARGET, "A RUN-QUEUE");
@@ -146,6 +147,7 @@ impl<T: TxTask + 'static> DefaultResubmissionQueue<T> {
 			if len == 0 {
 				self.is_queue_empty.store(true, Ordering::Relaxed);
 				if self.terminate.load(Ordering::Relaxed) {
+					trace!(target: LOG_TARGET, "EXIT RESUBMISSION LOOP");
 					return;
 				}
 				yield_now().await;
@@ -155,7 +157,8 @@ impl<T: TxTask + 'static> DefaultResubmissionQueue<T> {
 					if let Some(t) = task {
 						if let Some(t) = t {
 							trace!(target: LOG_TARGET, "M RUN-QUEUE {:?}", t.tx().hash());
-							self.ready_queue.write().push(t)
+							self.ready_queue.write().push(t);
+							trace!(target: LOG_TARGET, "M A RUN-QUEUE");
 						}
 					}
 				}
@@ -193,13 +196,15 @@ impl<T: TxTask + 'static> ResubmissionQueue<T> for DefaultResubmissionQueue<T> {
 	}
 
 	async fn is_empty(&self) -> bool {
-		trace!(
-			target:LOG_TARGET,
-			is_queue_empty = self.is_queue_empty.load(Ordering::Relaxed),
-			ready_queue_empty = self.ready_queue.write().is_empty(),
-			channel_empty = self.tx.capacity() == CHANNEL_CAPACITY,
-			"is_empty"
-		);
+		{
+			trace!(
+				target:LOG_TARGET,
+				is_queue_empty = self.is_queue_empty.load(Ordering::Relaxed),
+				ready_queue_empty = self.ready_queue.write().is_empty(),
+				channel_empty = self.tx.capacity() == CHANNEL_CAPACITY,
+				"is_empty"
+			);
+		}
 		self.is_queue_empty.load(Ordering::Relaxed) &&
 			self.ready_queue.write().is_empty() &&
 			self.tx.capacity() == CHANNEL_CAPACITY

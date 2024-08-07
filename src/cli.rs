@@ -35,6 +35,9 @@ pub enum CliCommand {
 	},
 	/// Check nonce for given account.
 	CheckNonce {
+		/// The type of chain to be used.
+		#[clap(long, default_value = "sub")]
+		chain: ChainType,
 		/// The RPC endpoint of the node to be used.
 		#[clap(long, default_value = "ws://127.0.0.1:9933")]
 		ws: String,
@@ -57,6 +60,9 @@ pub enum CliCommand {
 	},
 	/// Load and inspect existing log file.
 	LoadLog {
+		/// The type of chain use to store the log file.
+		#[clap(long, default_value = "sub")]
+		chain: ChainType,
 		/// Name of the file to be loaded.
 		log_file: String,
 		#[clap(long)]
@@ -92,7 +98,7 @@ pub enum SendingScenario {
 		#[clap(long)]
 		from: Option<u128>,
 		/// Number of transaction in the batch.
-		#[clap(long)]
+		#[clap(long, default_value_t = 1)]
 		count: u32,
 	},
 	/// Send multiple transactions to the node using multiple accounts.
@@ -109,7 +115,7 @@ pub enum SendingScenario {
 		#[clap(long)]
 		from: Option<u128>,
 		/// Number of transaction in the batch per account.
-		#[clap(long)]
+		#[clap(long, default_value_t = 1)]
 		count: u32,
 	},
 }

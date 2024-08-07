@@ -4,6 +4,7 @@
 
 use async_trait::async_trait;
 use cli::{ChainType, SendingScenario};
+use execution_log::{journal::Journal, make_stats};
 // use eth_transaction::{build_eth_tx, EthTransaction, EthTransactionsSink};
 use fake_transaction::{FakeHash, FakeTransaction};
 use fake_transaction_sink::FakeTransactionSink;
@@ -34,7 +35,8 @@ use clap::Parser;
 use transaction::{ResubmitHandler, Transaction, TransactionsSink};
 
 use crate::{
-	cli::CliCommand,
+	cli::{AccountsDescription, CliCommand},
+	execution_log::STAT_TARGET,
 	subxt_transaction::{
 		generate_ecdsa_keypair, generate_sr25519_keypair, EthRuntimeConfig,
 		SubstrateTransactionsSink,
@@ -45,17 +47,36 @@ fn init_logger() {
 	use std::sync::Once;
 	static INIT: Once = Once::new();
 	INIT.call_once(|| {
-		use tracing_subscriber::{fmt, layer::SubscriberExt, registry, EnvFilter, Layer};
+		use tracing::{debug, info, trace, Metadata};
+		use tracing_subscriber::{
+			fmt,
+			layer::{Context, Filter, SubscriberExt},
+			registry, EnvFilter, Layer,
+		};
 
 		let filter = EnvFilter::from_default_env();
-		let debug_layer = fmt::layer().with_target(true).with_filter(filter);
 
-		let stat_layer =
-			fmt::layer().with_target(false).with_level(false).without_time().with_filter(
-				tracing_subscriber::filter::filter_fn(|meta| {
+		struct F {
+			env_filter: EnvFilter,
+		}
+		impl F {
+			fn new() -> Self {
+				Self { env_filter: EnvFilter::from_default_env() }
+			}
+		}
+		impl<S> Filter<S> for F {
+			fn enabled(&self, meta: &Metadata<'_>, cx: &Context<'_, S>) -> bool {
+				!self.env_filter.enabled(meta, cx.clone()) &&
 					meta.target() == execution_log::STAT_TARGET
-				}),
-			);
+			}
+		}
+
+		let debug_layer = fmt::layer().with_target(true).with_filter(filter);
+		let stat_layer = fmt::layer()
+			.with_target(false)
+			.with_level(false)
+			.without_time()
+			.with_filter(F::new());
 
 		let subscriber = registry::Registry::default().with(debug_layer).with(stat_layer);
 
@@ -100,6 +121,10 @@ impl TransactionBuilder for FakeTransactionBuilder {
 			0
 		};
 		let i = account.parse::<u32>().expect("Account shall be valid integer");
+		// DefaultTxTask::<FakeTransaction>::new_watched(FakeTransaction::new_droppable_loop(
+		// 	i + (nonce << 16) as u32,
+		// 	200,
+		// ))
 		DefaultTxTask::<FakeTransaction>::new_watched(FakeTransaction::new_droppable_2nd_success(
 			i + (nonce << 16) as u32,
 			1000,
@@ -209,7 +234,7 @@ async fn execute_scenario<
 		DefaultTxTask<T>,
 		S,
 		DefaultResubmissionQueue<DefaultTxTask<T>>,
-	>::new(100000, sink, transactions, queue);
+	>::new(10000, sink, transactions, queue);
 
 	ctrlc::set_handler(move || {
 		block_on(stop_runner_tx.send(())).expect("Could not send signal on channel.")
@@ -221,16 +246,8 @@ async fn execute_scenario<
 fn send_loop() {}
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	init_logger();
-	// info!("Hello, world!");
-	// debug!(target: "XXX", "Hello, world!");
-	// trace!("Hello, world!");
-
-	info!(target: "x", "test");
-	debug!(target: "y", "test");
-	trace!(target: "z", "test");
-	trace!(target: "a", "test");
 
 	let cli = cli::Cli::parse();
 
@@ -266,8 +283,46 @@ async fn main() {
 				},
 			};
 		},
-		CliCommand::CheckNonce { ws, account } => {
-			// Handle check-nonce command
+		CliCommand::CheckNonce { chain, ws, account } => {
+			match chain {
+				ChainType::Fake => {
+					panic!("check nonce not supported for fake chain");
+				},
+				ChainType::Eth => {
+					let desc = if let Ok(id) = account.parse::<u32>() {
+						AccountsDescription::Derived(id..id + 1)
+					} else {
+						AccountsDescription::Keyring(account.clone())
+					};
+					let sink = EthTransactionsSink::new_with_uri_with_accounts_description(
+						ws,
+						desc,
+						generate_ecdsa_keypair,
+					)
+					.await;
+					let account =
+						sink.get_from_account_id(account).ok_or("account shall be correct")?;
+					let nonce = sink.check_account_nonce(account).await?;
+					info!(target:STAT_TARGET, "{nonce:?}");
+				},
+				ChainType::Sub => {
+					let desc = if let Ok(id) = account.parse::<u32>() {
+						AccountsDescription::Derived(id..id + 1)
+					} else {
+						AccountsDescription::Keyring(account.clone())
+					};
+					let sink = SubstrateTransactionsSink::new_with_uri_with_accounts_description(
+						ws,
+						desc,
+						generate_sr25519_keypair,
+					)
+					.await;
+					let account =
+						sink.get_from_account_id(account).ok_or("account shall be correct")?;
+					let nonce = sink.check_account_nonce(account).await?;
+					info!(target:STAT_TARGET, "{nonce:?}");
+				},
+			};
 		},
 		CliCommand::Metadata { ws } => {
 			// Handle metadata command
@@ -275,8 +330,20 @@ async fn main() {
 		CliCommand::BlockMonitor { ws } => {
 			// Handle block-monitor command
 		},
-		CliCommand::LoadLog { log_file, show_graphs, show_errors } => {
-			// Handle load-log command
+		CliCommand::LoadLog { chain, log_file, show_graphs, .. } => match chain {
+			ChainType::Sub => {
+				let logs = Journal::<DefaultTxTask<SubstrateTransaction>>::load_logs(log_file);
+				make_stats(logs.values().cloned(), *show_graphs);
+			},
+			ChainType::Eth => {
+				let logs = Journal::<DefaultTxTask<EthTransaction>>::load_logs(log_file);
+				make_stats(logs.values().cloned(), *show_graphs);
+			},
+			ChainType::Fake => {
+				let logs = Journal::<DefaultTxTask<FakeTransaction>>::load_logs(log_file);
+				make_stats(logs.values().cloned(), *show_graphs);
+			},
 		},
-	}
+	};
+	Ok(())
 }
