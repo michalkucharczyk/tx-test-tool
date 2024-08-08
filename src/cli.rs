@@ -54,13 +54,16 @@ pub enum CliCommand {
 	},
 	/// Execute the stand alone block monitor and print some transactions stats.
 	BlockMonitor {
+		/// The type of chain to be used.
+		#[clap(long, default_value = "sub")]
+		chain: ChainType,
 		/// The RPC endpoint of the node to be used.
 		#[clap(long, default_value = "ws://127.0.0.1:9933")]
 		ws: String,
 	},
 	/// Load and inspect existing log file.
 	LoadLog {
-		/// The type of chain use to store the log file.
+		/// The type of chain used to store the log file..
 		#[clap(long, default_value = "sub")]
 		chain: ChainType,
 		/// Name of the file to be loaded.

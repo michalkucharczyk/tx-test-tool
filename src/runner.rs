@@ -3,19 +3,13 @@ use crate::{
 		journal::Journal, make_stats, Counters, DefaultExecutionLog, ExecutionEvent, ExecutionLog,
 		Logs,
 	},
-	fake_transaction::FakeTransaction,
-	fake_transaction_sink::FakeTransactionSink,
-	resubmission::{DefaultResubmissionQueue, NeedsResubmit, ResubmissionQueue, ResubmitReason},
-	transaction::{
-		ResubmitHandler, Transaction, TransactionStatus, TransactionStatusIsTerminal,
-		TransactionsSink,
-	},
+	resubmission::{NeedsResubmit, ResubmissionQueue, ResubmitReason},
+	transaction::{ResubmitHandler, Transaction, TransactionStatusIsTerminal, TransactionsSink},
 };
 use async_trait::async_trait;
 use futures::{stream::FuturesUnordered, Future, StreamExt};
 use std::{
 	cmp::min,
-	fmt::Display,
 	pin::Pin,
 	sync::Arc,
 	time::{Duration, Instant},
@@ -24,7 +18,6 @@ use subxt::config::BlockHash;
 use tokio::{
 	select,
 	sync::mpsc::{channel, Receiver, Sender},
-	task::yield_now,
 };
 use tracing::{debug, info, trace};
 
@@ -118,7 +111,6 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 			Ok(mut stream) => {
 				log.push_event(ExecutionEvent::submit_and_watch_result(Ok(())));
 				while let Some(status) = stream.next().await {
-					// yield_now().await;
 					debug!(target:LOG_TARGET,hash=?self.tx().hash(),"status: {status:?}");
 					log.push_event(status.clone().into());
 					if status.is_finalized() {
@@ -183,18 +175,6 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 	}
 }
 
-// pub trait TransactionsStore<H: BlockHash, T: Transaction<H>>: Sync {
-//     fn ready(&self) -> impl IntoIterator<Item = >;
-// }
-
-trait TxTaskStore {
-	type HashType: BlockHash;
-	type Transaction: Transaction<HashType = Self::HashType>;
-	fn pop() -> Option<Self::Transaction>;
-}
-
-pub type FakeTxTask = DefaultTxTask<FakeTransaction>;
-
 impl<T: Transaction> DefaultTxTask<T> {
 	pub fn new_watched(tx: T) -> Self {
 		Self { tx, watched: true }
@@ -216,8 +196,6 @@ pub struct Runner<T: TxTask, Sink: TransactionsSink<TxTashHash<T>>, Queue: Resub
 	event_counters: Arc<Counters>,
 	last_displayed: Option<Instant>,
 }
-
-type FakeTxRunner = Runner<FakeTxTask, FakeTransactionSink, DefaultResubmissionQueue<FakeTxTask>>;
 
 impl<T: TxTask + 'static, Sink, Queue: ResubmissionQueue<T>> Runner<T, Sink, Queue>
 where
@@ -271,12 +249,6 @@ where
 		workers: &mut FuturesUnordered<Pin<Box<dyn Future<Output = ExecutionResult<T>> + Send>>>,
 		single: bool,
 	) {
-		if let Some(last_displayed) = self.last_displayed {
-			if last_displayed.elapsed() < Duration::from_millis(1000) {
-				return;
-			}
-		}
-		self.last_displayed = Some(Instant::now());
 		let current_count = self.rpc.count().await;
 		let gap = self
 			.initial_tasks
@@ -301,15 +273,24 @@ where
 			};
 		}
 
-		info!(
-			workers_len,
-			gap,
-			current_count,
-			initial_task = self.initial_tasks,
-			pushed,
-			"consume pending {}",
-			counters_displayed,
-		);
+		let display = if let Some(last_displayed) = self.last_displayed {
+			last_displayed.elapsed() > Duration::from_millis(1000)
+		} else {
+			true
+		};
+		if display {
+			self.last_displayed = Some(Instant::now());
+
+			info!(
+				workers_len,
+				gap,
+				current_count,
+				initial_task = self.initial_tasks,
+				pushed,
+				"consume pending {}",
+				counters_displayed,
+			);
+		};
 	}
 
 	pub async fn run_poc2(&mut self) {
@@ -389,7 +370,7 @@ mod tests {
 		fake_transaction::FakeTransaction,
 		fake_transaction_sink::FakeTransactionSink,
 		init_logger,
-		runner::{DefaultResubmissionQueue, FakeTxTask},
+		resubmission::DefaultResubmissionQueue,
 		subxt_api_connector,
 		subxt_transaction::{
 			EthRuntimeConfig, EthTransaction, EthTransactionsSink, SubxtTransactionsSink,
@@ -402,6 +383,10 @@ mod tests {
 	};
 	use subxt_signer::eth::dev;
 	use tracing::trace;
+
+	type FakeTxRunner =
+		Runner<FakeTxTask, FakeTransactionSink, DefaultResubmissionQueue<FakeTxTask>>;
+	pub type FakeTxTask = DefaultTxTask<FakeTransaction>;
 
 	#[tokio::test]
 	async fn oh_god() {

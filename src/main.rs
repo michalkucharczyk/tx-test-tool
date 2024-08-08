@@ -1,25 +1,25 @@
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
+// #![allow(dead_code)]
+// #![allow(unused_imports)]
+// #![allow(unused_variables)]
 
 use async_trait::async_trait;
+use block_monitor::BlockMonitor;
 use cli::{ChainType, SendingScenario};
 use execution_log::{journal::Journal, make_stats};
 // use eth_transaction::{build_eth_tx, EthTransaction, EthTransactionsSink};
 use fake_transaction::{FakeHash, FakeTransaction};
 use fake_transaction_sink::FakeTransactionSink;
 use futures::{executor::block_on, future::join};
-use jsonrpsee::core::client::TransportSenderT;
 use resubmission::DefaultResubmissionQueue;
-use runner::{DefaultTxTask, FakeTxTask, Runner, TxTask};
-use std::{any::Any, marker::PhantomData};
-use subxt::{config::BlockHash, tx::Signer, PolkadotConfig};
+use runner::{DefaultTxTask, Runner};
+use subxt::{config::BlockHash, PolkadotConfig};
 use subxt_transaction::{
 	build_eth_tx_payload, build_substrate_tx_payload, build_subxt_tx, EthTransaction,
-	EthTransactionsSink, HashOf, SubstrateTransaction, SubxtTransaction, SubxtTransactionsSink,
+	EthTransactionsSink, HashOf, SubstrateTransaction,
 };
-use tracing::{debug, info, trace};
+use tracing::info;
 
+mod block_monitor;
 mod cli;
 mod error;
 // mod eth_transaction;
@@ -47,7 +47,7 @@ fn init_logger() {
 	use std::sync::Once;
 	static INIT: Once = Once::new();
 	INIT.call_once(|| {
-		use tracing::{debug, info, trace, Metadata};
+		use tracing::Metadata;
 		use tracing_subscriber::{
 			fmt,
 			layer::{Context, Filter, SubscriberExt},
@@ -206,7 +206,7 @@ async fn execute_scenario<
 			let mut transactions = vec![];
 			let mut nonce = *from;
 
-			for i in 0..*count {
+			for _ in 0..*count {
 				transactions.push(builder.build_transaction(account, &nonce, &sink).await);
 				nonce = nonce.map(|n| n + 1);
 			}
@@ -217,7 +217,7 @@ async fn execute_scenario<
 
 			for account in *start_id..*last_id {
 				let mut nonce = *from;
-				for i in 0..*count {
+				for _ in 0..*count {
 					transactions
 						.push(builder.build_transaction(&account.to_string(), &nonce, &sink).await);
 					nonce = nonce.map(|n| n + 1);
@@ -327,8 +327,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		CliCommand::Metadata { ws } => {
 			// Handle metadata command
 		},
-		CliCommand::BlockMonitor { ws } => {
-			// Handle block-monitor command
+		CliCommand::BlockMonitor { chain, ws } => {
+			match chain {
+				ChainType::Sub => {
+					let block_monitor = BlockMonitor::<PolkadotConfig>::new(ws.clone()).await;
+					block_monitor.1.await;
+				},
+				ChainType::Eth => {
+					let block_monitor = BlockMonitor::<EthRuntimeConfig>::new(ws.clone()).await;
+					block_monitor.1.await;
+				},
+				ChainType::Fake => {
+					unimplemented!()
+				},
+			};
 		},
 		CliCommand::LoadLog { chain, log_file, show_graphs, .. } => match chain {
 			ChainType::Sub => {

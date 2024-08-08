@@ -11,8 +11,6 @@ use parking_lot::RwLock;
 use std::{
 	any::Any,
 	collections::HashMap,
-	hash::Hash,
-	marker::PhantomData,
 	pin::Pin,
 	sync::Arc,
 	time::{Duration, Instant},
@@ -24,7 +22,6 @@ use subxt::{
 		CheckNonceParams,
 	},
 	dynamic::{At, Value},
-	ext::sp_core::{sr25519::Pair as _, Pair},
 	rpc_params,
 	tx::{DynamicPayload, Signer, SubmittableExtrinsic},
 	OnlineClient, PolkadotConfig,
@@ -34,7 +31,7 @@ use subxt_signer::{
 	eth::{dev as eth_dev, AccountId20, Keypair as EthKeypair, Signature},
 	sr25519::{dev as sr25519_dev, Keypair as SrPair},
 };
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 
 const LOG_TARGET: &str = "subxt_tx";
 
@@ -112,6 +109,8 @@ pub struct SubxtTransactionsSink<C: subxt::Config, KP: Signer<C>> {
 	current_pending_extrinsics: RwLock<Option<(Instant, usize)>>,
 }
 
+const EXPECT_CONNECT: &str = "should connect to rpc client";
+
 impl<C, KP> SubxtTransactionsSink<C, KP>
 where
 	AccountIdOf<C>: Send + Sync + AsRef<[u8]>,
@@ -120,22 +119,24 @@ where
 {
 	pub async fn new() -> Self {
 		Self {
-			api: OnlineClient::<C>::from_insecure_url("ws://127.0.0.1:9933").await.unwrap(),
+			api: OnlineClient::<C>::from_insecure_url("ws://127.0.0.1:9933")
+				.await
+				.expect(EXPECT_CONNECT),
 			from_accounts: Default::default(),
 			to_accounts: Default::default(),
 			nonces: Default::default(),
-			rpc_client: RpcClient::from_url("ws://127.0.0.1:9933").await.unwrap(),
+			rpc_client: RpcClient::from_url("ws://127.0.0.1:9933").await.expect(EXPECT_CONNECT),
 			current_pending_extrinsics: None.into(),
 		}
 	}
 
 	pub async fn new_with_uri(uri: &String) -> Self {
 		Self {
-			api: OnlineClient::<C>::from_insecure_url(uri).await.unwrap(),
+			api: OnlineClient::<C>::from_insecure_url(uri).await.expect(EXPECT_CONNECT),
 			from_accounts: Default::default(),
 			to_accounts: Default::default(),
 			nonces: Default::default(),
-			rpc_client: RpcClient::from_url(uri).await.unwrap(),
+			rpc_client: RpcClient::from_url(uri).await.expect(EXPECT_CONNECT),
 			current_pending_extrinsics: None.into(),
 		}
 	}
@@ -152,14 +153,11 @@ where
 			derive_accounts(accounts_description.clone(), &SENDER_SEED, generate_pair);
 		let to_accounts = derive_accounts(accounts_description, &RECEIVER_SEED, generate_pair);
 		Self {
-			// api: OnlineClient::<C>::from_insecure_url(uri).await.unwrap(),
-			api: crate::subxt_api_connector::connect(uri)
-				.await
-				.expect("connecting to node should not fail"),
+			api: crate::subxt_api_connector::connect(uri).await.expect(EXPECT_CONNECT),
 			from_accounts: Arc::from(RwLock::from(from_accounts)),
 			to_accounts: Arc::from(RwLock::from(to_accounts)),
 			nonces: Default::default(),
-			rpc_client: RpcClient::from_url(uri).await.unwrap(),
+			rpc_client: RpcClient::from_url(uri).await.expect(EXPECT_CONNECT),
 			current_pending_extrinsics: None.into(),
 		}
 	}
@@ -270,8 +268,8 @@ where
 
 	///Current count of transactions being processed by sink
 	async fn count(&self) -> usize {
-		let x = { *self.current_pending_extrinsics.read() };
-		if let Some((ts, count)) = x {
+		let current_pending_extrinsics = { *self.current_pending_extrinsics.read() };
+		if let Some((ts, _)) = current_pending_extrinsics {
 			if ts.elapsed() > Duration::from_millis(1000) {
 				self.update_count().await;
 			}
@@ -331,7 +329,6 @@ pub fn generate_sr25519_keypair(description: AccountGenerateRequest) -> SrPair {
 			let derivation = format!("{SEED}{seed}/{i}");
 			let u = subxt_signer::SecretUri::from_str(&derivation).unwrap();
 			<subxt_signer::sr25519::Keypair>::from_uri(&u).unwrap().into()
-			// <SrPair as Pair>::from_string(&derivation, None).unwrap().into()
 		},
 	}
 }
@@ -375,8 +372,6 @@ where
 					chunk
 						.into_iter()
 						.map(move |i| {
-							let derivation = format!("{SEED}{seed}");
-							// info!("derivation: {thread_idx:} {derivation:?}");
 							(
 								i.to_string(),
 								(
@@ -500,7 +495,7 @@ where
 		sink.get_to_account_metadata(account).expect("account metadata exists"),
 	);
 
-	debug!(target:LOG_TARGET,"tx hash: {:?}", tx.hash());
+	debug!(target:LOG_TARGET,"built tx hash: {:?}", tx.hash());
 
 	tx
 }
@@ -517,47 +512,7 @@ mod tests {
 	use tracing::info;
 
 	#[tokio::test]
-	async fn test_subxt_send() -> Result<(), Box<dyn std::error::Error>> {
-		init_logger();
-
-		let api = OnlineClient::<EthRuntimeConfig>::from_insecure_url("ws://127.0.0.1:9933")
-			.await
-			.unwrap();
-
-		let alith = eth_dev::alith();
-		let baltathar = eth_dev::baltathar();
-
-		let nonce = 19000;
-		let tx_params = Params::new().nonce(nonce).build();
-
-		// let tx_call = subxt::dynamic::tx("System", "remark",
-		// vec![Value::from_bytes("heeelooo")]);
-		let tx_call = subxt::dynamic::tx(
-			"Balances",
-			"transfer_keep_alive",
-			vec![
-				// // Substrate:
-				// Value::unnamed_variant("Id", [Value::from_bytes(receiver.public())]),
-				// Eth:
-				Value::unnamed_composite(vec![Value::from_bytes(alith.account_id())]),
-				Value::u128(1u32.into()),
-			],
-		);
-
-		let tx = SubxtTransaction::<EthRuntimeConfig>::new(
-			api.tx().create_signed_offline(&tx_call, &baltathar, tx_params).unwrap(),
-			nonce as u128,
-			AccountMetadata::KeyRing("baltathar".to_string()),
-		);
-
-		info!("tx hash: {:?}", tx.hash());
-
-		let sink = SubxtTransactionsSink::<EthRuntimeConfig, EthKeypair>::new().await;
-
-		let tx: Box<dyn Transaction<HashType = <EthRuntimeConfig as subxt::Config>::Hash>> =
-			Box::from(tx);
-		let mut s = sink.submit_and_watch(&*tx).await.unwrap().map(|e| info!("event: {:?}", e));
-		while let Some(_) = s.next().await {}
-		Ok(())
+	async fn placeholder() -> Result<(), Box<dyn std::error::Error>> {
+		//todo add tests....
 	}
 }

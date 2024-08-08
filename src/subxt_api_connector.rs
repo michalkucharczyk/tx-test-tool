@@ -1,4 +1,3 @@
-use super::subxt_transaction::EthRuntimeConfig;
 use std::{error::Error, sync::Arc, time::Duration};
 use subxt::{backend::legacy::LegacyBackend, OnlineClient};
 use tracing::info;

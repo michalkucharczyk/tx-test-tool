@@ -79,9 +79,9 @@ mod test {
 		let t: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t);
 
 		let events = rpc.submit_and_watch(&*t).await.unwrap();
-		assert_eq!(rpc.count(), 1);
+		assert_eq!(rpc.count().await, 1);
 		let v = events.collect::<Vec<_>>().await;
-		assert_eq!(rpc.count(), 0);
+		assert_eq!(rpc.count().await, 0);
 		assert_eq!(
 			v,
 			vec![
@@ -143,14 +143,14 @@ mod test {
 
 		let f = || async {
 			tokio::time::sleep(Duration::from_millis(200)).await;
-			rpc.count()
+			rpc.count().await
 		};
 
 		let result = join3(rpc.submit(&*t1), rpc.submit(&*t2), f()).await;
 		let r1 = result.0;
 		let r2 = result.1;
 		assert_eq!(result.2, 2);
-		assert_eq!(rpc.count(), 0);
+		assert_eq!(rpc.count().await, 0);
 		assert_eq!(r1.unwrap(), 111u32.to_le_bytes().into());
 		assert_eq!(r2.unwrap(), 222u32.to_le_bytes().into());
 	}
