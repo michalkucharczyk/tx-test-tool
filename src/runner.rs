@@ -1,15 +1,25 @@
 use crate::{
 	execution_log::{
-		journal::Journal, make_stats, DefaultExecutionLog, ExecutionEvent, ExecutionLog, Logs,
+		journal::Journal, make_stats, Counters, DefaultExecutionLog, ExecutionEvent, ExecutionLog,
+		Logs,
 	},
 	fake_transaction::FakeTransaction,
 	fake_transaction_sink::FakeTransactionSink,
 	resubmission::{DefaultResubmissionQueue, NeedsResubmit, ResubmissionQueue, ResubmitReason},
-	transaction::{ResubmitHandler, Transaction, TransactionStatusIsTerminal, TransactionsSink},
+	transaction::{
+		ResubmitHandler, Transaction, TransactionStatus, TransactionStatusIsTerminal,
+		TransactionsSink,
+	},
 };
 use async_trait::async_trait;
 use futures::{stream::FuturesUnordered, Future, StreamExt};
-use std::{pin::Pin, sync::Arc, time::Duration};
+use std::{
+	cmp::min,
+	fmt::Display,
+	pin::Pin,
+	sync::Arc,
+	time::{Duration, Instant},
+};
 use subxt::config::BlockHash;
 use tokio::{
 	select,
@@ -203,6 +213,8 @@ pub struct Runner<T: TxTask, Sink: TransactionsSink<TxTashHash<T>>, Queue: Resub
 	rpc: Arc<Sink>,
 	resubmission_queue: Queue,
 	stop_rx: Receiver<()>,
+	event_counters: Arc<Counters>,
+	last_displayed: Option<Instant>,
 }
 
 type FakeTxRunner = Runner<FakeTxTask, FakeTransactionSink, DefaultResubmissionQueue<FakeTxTask>>;
@@ -218,9 +230,15 @@ where
 		transactions: Vec<T>,
 		resubmission_queue: Queue,
 	) -> (Sender<()>, Self) {
+		let event_counters = Arc::from(Counters::default());
 		let logs = transactions
 			.iter()
-			.map(|t| (t.tx().hash(), Arc::new(DefaultExecutionLog::new_with_tx(t.tx()))))
+			.map(|t| {
+				(
+					t.tx().hash(),
+					Arc::new(DefaultExecutionLog::new_with_tx(t.tx(), event_counters.clone())),
+				)
+			})
 			.collect();
 
 		let (tx, rx) = channel(1);
@@ -235,6 +253,8 @@ where
 				done: Default::default(),
 				errors: Default::default(),
 				stop_rx: rx,
+				event_counters,
+				last_displayed: None,
 			},
 		)
 	}
@@ -246,27 +266,50 @@ where
 		r
 	}
 
-	pub fn consume_pending(
+	pub async fn consume_pending(
 		&mut self,
 		workers: &mut FuturesUnordered<Pin<Box<dyn Future<Output = ExecutionResult<T>> + Send>>>,
+		single: bool,
 	) {
-		loop {
-			if workers.len() >= self.initial_tasks {
-				break
+		if let Some(last_displayed) = self.last_displayed {
+			if last_displayed.elapsed() < Duration::from_millis(1000) {
+				return;
 			}
-
+		}
+		self.last_displayed = Some(Instant::now());
+		let current_count = self.rpc.count().await;
+		let gap = self
+			.initial_tasks
+			.saturating_sub(current_count)
+			.saturating_sub(self.event_counters.buffered());
+		let workers_len = workers.len();
+		let mut pushed = 0;
+		let to_consume = if single { min(1, gap) } else { gap };
+		let counters_displayed = format!("{}", self.event_counters);
+		for _ in 0..to_consume {
 			let task = self.pop();
 			if let Some(task) = task {
 				let hash = task.tx().hash();
 				let log = self.logs[&task.tx().hash()].clone();
 				log.push_event(ExecutionEvent::popped());
-				info!(target:LOG_TARGET,hash = ?hash, workers_len=workers.len(), "before push");
+				trace!(target:LOG_TARGET,hash = ?hash, workers_len=workers.len(), "before push");
 				workers.push(task.execute(log, self.rpc.clone()));
-				info!(target:LOG_TARGET,hash = ?hash, workers_len=workers.len(), "after push");
+				pushed = pushed + 1;
+				trace!(target:LOG_TARGET,hash = ?hash, workers_len=workers.len(), "after push");
 			} else {
 				break;
 			};
 		}
+
+		info!(
+			workers_len,
+			gap,
+			current_count,
+			initial_task = self.initial_tasks,
+			pushed,
+			"consume pending {}",
+			counters_displayed,
+		);
 	}
 
 	pub async fn run_poc2(&mut self) {
@@ -287,8 +330,8 @@ where
 
 		loop {
 			select! {
-				_ = tokio::time::sleep(Duration::from_millis(1000)) => {
-							self.consume_pending(&mut workers);
+				_ = tokio::time::sleep(Duration::from_millis(3000)) => {
+					self.consume_pending(&mut workers, false).await;
 				}
 				_ = self.stop_rx.recv() => {
 					self.resubmission_queue.forced_terminate();
@@ -298,8 +341,8 @@ where
 				done = workers.next() => {
 					match done {
 						Some(result) => {
-							info!(target:LOG_TARGET,?result, workers_len=workers.len(), "FINISHED");
-							self.consume_pending(&mut workers);
+							debug!(target:LOG_TARGET,?result, workers_len=workers.len(), "FINISHED");
+							self.consume_pending(&mut workers, false).await;
 
 							match result {
 								ExecutionResult::NeedsResubmit(reason, t) => {
@@ -319,14 +362,14 @@ where
 							trace!(target:LOG_TARGET, "after match");
 						}
 						None => {
-							trace!(target:LOG_TARGET,"all futures done");
+							debug!(target:LOG_TARGET,"all futures done");
 							tokio::time::sleep(Duration::from_millis(100)).await;
 							if self.resubmission_queue.is_empty().await {
 								self.resubmission_queue.terminate();
-								info!(target:LOG_TARGET,"done");
+								debug!(target:LOG_TARGET,"done");
 								break;
 							}
-							self.consume_pending(&mut workers);
+							self.consume_pending(&mut workers, false).await;
 						}
 					}
 				}

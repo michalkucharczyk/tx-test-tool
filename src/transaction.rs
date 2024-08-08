@@ -88,5 +88,5 @@ pub trait TransactionsSink<H: BlockHash>: Send + Sync {
 	async fn submit(&self, tx: &dyn Transaction<HashType = H>) -> Result<H, Error>;
 
 	///Current count of transactions being processed by sink
-	fn count(&self) -> usize;
+	async fn count(&self) -> usize;
 }

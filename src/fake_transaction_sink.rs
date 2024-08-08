@@ -57,7 +57,7 @@ impl TransactionsSink<FakeHash> for FakeTransactionSink {
 	}
 
 	///Current count of transactions being processed by sink
-	fn count(&self) -> usize {
+	async fn count(&self) -> usize {
 		self.txs.read().len()
 	}
 }

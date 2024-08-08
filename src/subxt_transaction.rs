@@ -8,14 +8,24 @@ use crate::{
 use async_trait::async_trait;
 use futures::StreamExt;
 use parking_lot::RwLock;
-use std::{any::Any, collections::HashMap, hash::Hash, marker::PhantomData, pin::Pin, sync::Arc};
+use std::{
+	any::Any,
+	collections::HashMap,
+	hash::Hash,
+	marker::PhantomData,
+	pin::Pin,
+	sync::Arc,
+	time::{Duration, Instant},
+};
 use subxt::{
+	backend::rpc::RpcClient,
 	config::signed_extensions::{
 		ChargeAssetTxPaymentParams, ChargeTransactionPaymentParams, CheckMortalityParams,
 		CheckNonceParams,
 	},
 	dynamic::{At, Value},
 	ext::sp_core::{sr25519::Pair as _, Pair},
+	rpc_params,
 	tx::{DynamicPayload, Signer, SubmittableExtrinsic},
 	OnlineClient, PolkadotConfig,
 };
@@ -98,6 +108,8 @@ pub struct SubxtTransactionsSink<C: subxt::Config, KP: Signer<C>> {
 	from_accounts: Arc<RwLock<HashMap<String, (KP, AccountMetadata)>>>,
 	to_accounts: Arc<RwLock<HashMap<String, (KP, AccountMetadata)>>>,
 	nonces: Arc<RwLock<HashMap<String, u128>>>,
+	rpc_client: RpcClient,
+	current_pending_extrinsics: RwLock<Option<(Instant, usize)>>,
 }
 
 impl<C, KP> SubxtTransactionsSink<C, KP>
@@ -112,6 +124,8 @@ where
 			from_accounts: Default::default(),
 			to_accounts: Default::default(),
 			nonces: Default::default(),
+			rpc_client: RpcClient::from_url("ws://127.0.0.1:9933").await.unwrap(),
+			current_pending_extrinsics: None.into(),
 		}
 	}
 
@@ -121,6 +135,8 @@ where
 			from_accounts: Default::default(),
 			to_accounts: Default::default(),
 			nonces: Default::default(),
+			rpc_client: RpcClient::from_url(uri).await.unwrap(),
+			current_pending_extrinsics: None.into(),
 		}
 	}
 
@@ -143,6 +159,8 @@ where
 			from_accounts: Arc::from(RwLock::from(from_accounts)),
 			to_accounts: Arc::from(RwLock::from(to_accounts)),
 			nonces: Default::default(),
+			rpc_client: RpcClient::from_url(uri).await.unwrap(),
+			current_pending_extrinsics: None.into(),
 		}
 	}
 
@@ -180,6 +198,16 @@ where
 			Ok(nonce)
 		}
 	}
+
+	async fn update_count(&self) {
+		let i = Instant::now();
+		let xts = self
+			.rpc_client
+			.request::<Vec<serde_json::Value>>("author_pendingExtrinsics", rpc_params![])
+			.await
+			.expect("author_pendingExtrinsics should not fail");
+		*self.current_pending_extrinsics.write() = Some((i, xts.len()));
+	}
 }
 
 pub async fn check_account_nonce<C: subxt::Config>(
@@ -211,9 +239,9 @@ where
 #[async_trait]
 impl<C, KP> TransactionsSink<<C as subxt::Config>::Hash> for SubxtTransactionsSink<C, KP>
 where
-	AccountIdOf<C>: Send + Sync,
+	AccountIdOf<C>: Send + Sync + AsRef<[u8]>,
 	C: subxt::Config,
-	KP: Signer<C> + Send + Sync + 'static,
+	KP: Signer<C> + Clone + Send + Sync + 'static,
 {
 	async fn submit_and_watch(
 		&self,
@@ -241,8 +269,20 @@ where
 	}
 
 	///Current count of transactions being processed by sink
-	fn count(&self) -> usize {
-		todo!()
+	async fn count(&self) -> usize {
+		let x = { *self.current_pending_extrinsics.read() };
+		if let Some((ts, count)) = x {
+			if ts.elapsed() > Duration::from_millis(1000) {
+				self.update_count().await;
+			}
+		} else {
+			self.update_count().await;
+		}
+
+		self.current_pending_extrinsics
+			.read()
+			.expect("current_pending_extrinsics cannot be None")
+			.1
 	}
 }
 

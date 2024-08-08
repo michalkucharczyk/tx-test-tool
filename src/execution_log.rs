@@ -8,14 +8,18 @@ use parking_lot::RwLock;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
 	collections::HashMap,
+	fmt::Display,
 	fs::File,
 	io::{Read, Write},
 	marker::PhantomData,
-	sync::Arc,
+	sync::{
+		atomic::{AtomicUsize, Ordering},
+		Arc,
+	},
 	time::{Duration, SystemTime},
 };
 use subxt::config::BlockHash;
-use tracing::{info, trace};
+use tracing::{debug, info, trace};
 
 pub const STAT_TARGET: &str = "stat";
 pub const LOG_TARGET: &str = "execution_log";
@@ -53,6 +57,75 @@ impl<H: BlockHash> ExecutionEvent<H> {
 impl<H: BlockHash> From<TransactionStatus<H>> for ExecutionEvent<H> {
 	fn from(value: TransactionStatus<H>) -> Self {
 		Self::TxPoolEvent(SystemTime::now(), value)
+	}
+}
+
+#[derive(Debug, Default)]
+pub struct Counters {
+	popped: AtomicUsize,
+	sent: AtomicUsize,
+	resubmitted: AtomicUsize,
+	submit_success: AtomicUsize,
+	submit_error: AtomicUsize,
+	submit_and_watch_success: AtomicUsize,
+	submit_and_watch_error: AtomicUsize,
+
+	ts_validated: AtomicUsize,
+	ts_finalized: AtomicUsize,
+	ts_dropped: AtomicUsize,
+	ts_invalid: AtomicUsize,
+	ts_error: AtomicUsize,
+}
+
+impl Display for Counters {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		let buffered = self.buffered();
+		write!(
+			f,
+			"p {:7} s:{:7} v:{:7} f:{:7} d:{:7} buff:{:7}",
+			self.popped.load(Ordering::Relaxed),
+			self.sent.load(Ordering::Relaxed),
+			self.ts_validated.load(Ordering::Relaxed),
+			self.ts_finalized.load(Ordering::Relaxed),
+			self.ts_dropped.load(Ordering::Relaxed),
+			buffered
+		)
+	}
+}
+
+impl Counters {
+	fn inc(x: &AtomicUsize) {
+		x.fetch_add(1, Ordering::Relaxed);
+	}
+
+	pub fn buffered(&self) -> usize {
+		self.popped.load(Ordering::Relaxed) -
+			(self.submit_and_watch_success.load(Ordering::Relaxed) +
+				self.submit_and_watch_error.load(Ordering::Relaxed))
+	}
+
+	fn count_event<H: BlockHash>(&self, event: &ExecutionEvent<H>) {
+		match event {
+			ExecutionEvent::Popped(_) => Self::inc(&self.popped),
+			ExecutionEvent::Sent(_) => Self::inc(&self.sent),
+			ExecutionEvent::Resubmitted(_) => Self::inc(&self.resubmitted),
+			ExecutionEvent::SubmitResult(_, Ok(_)) => Self::inc(&self.submit_success),
+			ExecutionEvent::SubmitResult(_, Err(_)) => Self::inc(&self.submit_error),
+			ExecutionEvent::SubmitAndWatchResult(_, Ok(_)) =>
+				Self::inc(&self.submit_and_watch_success),
+			ExecutionEvent::SubmitAndWatchResult(_, Err(_)) =>
+				Self::inc(&self.submit_and_watch_error),
+			ExecutionEvent::TxPoolEvent(_, status) => match status {
+				TransactionStatus::Validated => Self::inc(&self.ts_validated),
+				TransactionStatus::Finalized(_) => Self::inc(&self.ts_finalized),
+				TransactionStatus::Dropped(_) => Self::inc(&self.ts_dropped),
+				TransactionStatus::Invalid(_) => Self::inc(&self.ts_invalid),
+				TransactionStatus::Error(_) => Self::inc(&self.ts_error),
+				TransactionStatus::NoLongerInBestBlock |
+				TransactionStatus::Broadcasted(_) |
+				TransactionStatus::InBlock(_) => {},
+			},
+		}
 	}
 }
 
@@ -96,6 +169,7 @@ pub struct DefaultExecutionLog<H: BlockHash> {
 	account_metadata: AccountMetadata,
 	nonce: u128,
 	hash: H,
+	total_counters: Arc<Counters>,
 }
 
 pub type Logs<T> = HashMap<TxTashHash<T>, Arc<DefaultExecutionLog<TxTashHash<T>>>>;
@@ -107,6 +181,7 @@ impl<H: BlockHash + Default> Default for DefaultExecutionLog<H> {
 			nonce: Default::default(),
 			account_metadata: Default::default(),
 			hash: Default::default(),
+			total_counters: Default::default(),
 		}
 	}
 }
@@ -118,12 +193,13 @@ impl<H: BlockHash + 'static + Default> DefaultExecutionLog<H> {
 }
 
 impl<H: BlockHash + 'static> DefaultExecutionLog<H> {
-	pub fn new_with_tx(t: &dyn Transaction<HashType = H>) -> Self {
+	pub fn new_with_tx(t: &dyn Transaction<HashType = H>, counters: Arc<Counters>) -> Self {
 		Self {
 			events: Default::default(),
 			nonce: t.nonce(),
 			account_metadata: t.account_metadata(),
 			hash: t.hash(),
+			total_counters: counters,
 		}
 	}
 
@@ -150,7 +226,8 @@ impl<H: BlockHash + 'static> ExecutionLog for DefaultExecutionLog<H> {
 	type HashType = H;
 
 	fn push_event(&self, event: ExecutionEvent<Self::HashType>) {
-		info!(target:LOG_TARGET, ?event, "B push_event");
+		debug!(target:LOG_TARGET, ?event, "B push_event");
+		self.total_counters.count_event(&event);
 		self.events.write().push(event);
 		trace!(target:LOG_TARGET, "A push_event");
 	}
@@ -418,6 +495,7 @@ pub mod journal {
 				account_metadata: value.account_metadata,
 				nonce: value.nonce,
 				hash: value.hash,
+				total_counters: Default::default(),
 			}
 		}
 	}

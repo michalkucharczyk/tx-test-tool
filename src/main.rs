@@ -234,7 +234,7 @@ async fn execute_scenario<
 		DefaultTxTask<T>,
 		S,
 		DefaultResubmissionQueue<DefaultTxTask<T>>,
-	>::new(10000, sink, transactions, queue);
+	>::new(15000, sink, transactions, queue);
 
 	ctrlc::set_handler(move || {
 		block_on(stop_runner_tx.send(())).expect("Could not send signal on channel.")
