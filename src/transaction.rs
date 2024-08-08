@@ -75,6 +75,11 @@ pub trait ResubmitHandler: Sized {
 	fn handle_resubmit_request(self) -> Option<Self>;
 }
 
+#[async_trait]
+pub trait TransactionMonitor<H: BlockHash> {
+	async fn wait(&self, tx_hash: H) -> H;
+}
+
 pub type StreamOf<I> = Pin<Box<dyn futures::Stream<Item = I> + Send>>;
 
 /// Abstraction for RPC client
@@ -89,4 +94,6 @@ pub trait TransactionsSink<H: BlockHash>: Send + Sync {
 
 	///Current count of transactions being processed by sink
 	async fn count(&self) -> usize;
+
+	fn transaction_monitor(&self) -> Option<&dyn TransactionMonitor<H>>;
 }

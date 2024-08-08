@@ -148,6 +148,10 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 			Ok(_) => {
 				log.push_event(ExecutionEvent::submit_result(Ok(())));
 				//todo: block monitor await here (with some global (cli-provided) timeout)
+				if let Some(monitor) = rpc.transaction_monitor() {
+					let hash = monitor.wait(self.tx().hash()).await;
+					log.push_event(ExecutionEvent::finalized_monitor(hash));
+				}
 				ExecutionResult::Done(self.tx().hash())
 			},
 			Err(e) => {

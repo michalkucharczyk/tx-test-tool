@@ -18,9 +18,9 @@ pub enum CliCommand {
 		/// The RPC endpoint of the node to be used.
 		#[clap(long, default_value = "ws://127.0.0.1:9933")]
 		ws: String,
-		/// Send transaction w/o registering event listener.
+		/// Send transaction with event listener (submit_and_watch).
 		#[clap(long)]
-		unwatched: bool,
+		watched: bool,
 		/// Spawn block monitor for checking if transactions are included in finalized blocks.
 		#[clap(long)]
 		block_monitor: bool,

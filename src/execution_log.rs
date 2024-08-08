@@ -32,6 +32,7 @@ pub enum ExecutionEvent<H> {
 	SubmitResult(SystemTime, Result<(), String>),
 	SubmitAndWatchResult(SystemTime, Result<(), String>),
 	TxPoolEvent(SystemTime, TransactionStatus<H>),
+	FinalizedMonitor(SystemTime, H),
 }
 
 impl<H: BlockHash + DeserializeOwned + std::fmt::Debug> ExecutionEvent<H> {}
@@ -52,6 +53,9 @@ impl<H: BlockHash> ExecutionEvent<H> {
 	pub fn submit_result(r: Result<(), Error>) -> Self {
 		Self::SubmitResult(SystemTime::now(), r.map_err(|e| e.to_string()))
 	}
+	pub fn finalized_monitor(block_hash: H) -> Self {
+		Self::FinalizedMonitor(SystemTime::now(), block_hash)
+	}
 }
 
 impl<H: BlockHash> From<TransactionStatus<H>> for ExecutionEvent<H> {
@@ -69,6 +73,7 @@ pub struct Counters {
 	submit_error: AtomicUsize,
 	submit_and_watch_success: AtomicUsize,
 	submit_and_watch_error: AtomicUsize,
+	finalized_monitor: AtomicUsize,
 
 	ts_validated: AtomicUsize,
 	ts_finalized: AtomicUsize,
@@ -115,6 +120,7 @@ impl Counters {
 				Self::inc(&self.submit_and_watch_success),
 			ExecutionEvent::SubmitAndWatchResult(_, Err(_)) =>
 				Self::inc(&self.submit_and_watch_error),
+			ExecutionEvent::FinalizedMonitor(_, _) => Self::inc(&self.finalized_monitor),
 			ExecutionEvent::TxPoolEvent(_, status) => match status {
 				TransactionStatus::Validated => Self::inc(&self.ts_validated),
 				TransactionStatus::Finalized(_) => Self::inc(&self.ts_finalized),
@@ -153,6 +159,7 @@ pub trait ExecutionLog: Sync + Send {
 	fn time_to_invalid(&self) -> Option<Duration>;
 	fn time_to_error(&self) -> Option<Duration>;
 	fn time_to_resubmitted(&self) -> Option<Duration>;
+	fn time_to_finalized_monitor(&self) -> Option<Duration>;
 
 	fn get_invalid_reason(&self) -> Option<String>;
 	fn get_error_reason(&self) -> Option<String>;
@@ -265,6 +272,14 @@ impl<H: BlockHash + 'static> ExecutionLog for DefaultExecutionLog<H> {
 			ExecutionEvent::TxPoolEvent(_, TransactionStatus::Finalized(h)) => Some(*h),
 			_ => None,
 		})
+	}
+
+	fn time_to_finalized_monitor(&self) -> Option<Duration> {
+		let fmts = self.events.read().iter().find_map(|e| match e {
+			ExecutionEvent::FinalizedMonitor(i, _) => Some(*i),
+			_ => None,
+		});
+		Self::duration_since_timestamp(self.get_sent_time_stamp(), fmts)
 	}
 
 	fn time_to_finalized(&self) -> Option<Duration> {
@@ -395,9 +410,9 @@ pub fn single_stat<'a, E: ExecutionLog + 'a>(
 ) {
 	let mut v: Vec<f64> = vec![];
 	for l in logs {
-		let time_to_finalized = method(&*l);
-		if let Some(time_to_finalized) = time_to_finalized {
-			v.push(time_to_finalized.as_secs_f64());
+		let time_to_event = method(&*l);
+		if let Some(time_to_event) = time_to_event {
+			v.push(time_to_event.as_secs_f64());
 		}
 	}
 	let mean: Mean = v.iter().collect();
@@ -458,6 +473,12 @@ pub fn make_stats<E: ExecutionLog>(logs: impl IntoIterator<Item = Arc<E>>, show_
 	single_stat("Time to broadcasted".into(), logs.iter(), E::time_to_broadcasted, show_graphs);
 	single_stat("Time to in_block".into(), logs.iter(), E::time_to_inblock, show_graphs);
 	single_stat("Time to finalization".into(), logs.iter(), E::time_to_finalized, show_graphs);
+	single_stat(
+		"Time to finalization (monitor)".into(),
+		logs.iter(),
+		E::time_to_finalized_monitor,
+		show_graphs,
+	);
 	single_stat("Time to resubmitted".into(), logs.iter(), E::time_to_resubmitted, show_graphs);
 
 	failure_reason_stats("Dropped".into(), logs.iter(), E::get_dropped_reason);

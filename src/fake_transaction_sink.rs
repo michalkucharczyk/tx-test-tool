@@ -2,7 +2,8 @@ use crate::{
 	error::Error,
 	fake_transaction::{FakeHash, FakeTransaction},
 	transaction::{
-		StreamOf, Transaction, TransactionStatus, TransactionStatusIsTerminal, TransactionsSink,
+		StreamOf, Transaction, TransactionMonitor, TransactionStatus, TransactionStatusIsTerminal,
+		TransactionsSink,
 	},
 };
 use async_trait::async_trait;
@@ -59,6 +60,10 @@ impl TransactionsSink<FakeHash> for FakeTransactionSink {
 	///Current count of transactions being processed by sink
 	async fn count(&self) -> usize {
 		self.txs.read().len()
+	}
+
+	fn transaction_monitor(&self) -> Option<&dyn TransactionMonitor<FakeHash>> {
+		None
 	}
 }
 

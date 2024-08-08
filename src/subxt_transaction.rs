@@ -1,8 +1,10 @@
 use crate::{
+	block_monitor::BlockMonitor,
 	cli::AccountsDescription,
 	error::Error,
 	transaction::{
-		AccountMetadata, ResubmitHandler, Transaction, TransactionStatus, TransactionsSink,
+		AccountMetadata, ResubmitHandler, Transaction, TransactionMonitor, TransactionStatus,
+		TransactionsSink,
 	},
 };
 use async_trait::async_trait;
@@ -107,6 +109,7 @@ pub struct SubxtTransactionsSink<C: subxt::Config, KP: Signer<C>> {
 	nonces: Arc<RwLock<HashMap<String, u128>>>,
 	rpc_client: RpcClient,
 	current_pending_extrinsics: RwLock<Option<(Instant, usize)>>,
+	transaction_monitor: Option<BlockMonitor<C>>,
 }
 
 const EXPECT_CONNECT: &str = "should connect to rpc client";
@@ -127,6 +130,7 @@ where
 			nonces: Default::default(),
 			rpc_client: RpcClient::from_url("ws://127.0.0.1:9933").await.expect(EXPECT_CONNECT),
 			current_pending_extrinsics: None.into(),
+			transaction_monitor: None,
 		}
 	}
 
@@ -138,6 +142,7 @@ where
 			nonces: Default::default(),
 			rpc_client: RpcClient::from_url(uri).await.expect(EXPECT_CONNECT),
 			current_pending_extrinsics: None.into(),
+			transaction_monitor: None,
 		}
 	}
 
@@ -145,6 +150,7 @@ where
 		uri: &String,
 		accounts_description: AccountsDescription,
 		generate_pair: G,
+		transaction_monitor: Option<BlockMonitor<C>>,
 	) -> Self
 	where
 		G: GenerateKeyPairFunction<KP>,
@@ -159,6 +165,7 @@ where
 			nonces: Default::default(),
 			rpc_client: RpcClient::from_url(uri).await.expect(EXPECT_CONNECT),
 			current_pending_extrinsics: None.into(),
+			transaction_monitor,
 		}
 	}
 
@@ -263,7 +270,9 @@ where
 		&self,
 		tx: &dyn Transaction<HashType = <C as subxt::Config>::Hash>,
 	) -> Result<<C as subxt::Config>::Hash, Error> {
-		Ok(tx.hash())
+		// Ok(tx.hash())
+		let tx = tx.as_any().downcast_ref::<SubxtTransaction<C>>().unwrap();
+		tx.extrinsic.submit().await.map_err(|e| e.into())
 	}
 
 	///Current count of transactions being processed by sink
@@ -281,6 +290,12 @@ where
 			.read()
 			.expect("current_pending_extrinsics cannot be None")
 			.1
+	}
+
+	fn transaction_monitor(&self) -> Option<&dyn TransactionMonitor<<C as subxt::Config>::Hash>> {
+		self.transaction_monitor
+			.as_ref()
+			.map(|m| m as &dyn TransactionMonitor<<C as subxt::Config>::Hash>)
 	}
 }
 
@@ -514,5 +529,6 @@ mod tests {
 	#[tokio::test]
 	async fn placeholder() -> Result<(), Box<dyn std::error::Error>> {
 		//todo add tests....
+		Ok(())
 	}
 }

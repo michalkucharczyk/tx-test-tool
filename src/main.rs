@@ -1,6 +1,8 @@
-// #![allow(dead_code)]
-// #![allow(unused_imports)]
-// #![allow(unused_variables)]
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
+use std::time::Duration;
 
 use async_trait::async_trait;
 use block_monitor::BlockMonitor;
@@ -96,6 +98,7 @@ trait TransactionBuilder {
 		account: &String,
 		nonce: &Option<u128>,
 		sink: &Self::Sink,
+		watched: bool,
 	) -> DefaultTxTask<Self::Transaction>;
 }
 
@@ -111,7 +114,11 @@ impl TransactionBuilder for FakeTransactionBuilder {
 		account: &String,
 		nonce: &Option<u128>,
 		sink: &Self::Sink,
+		watched: bool,
 	) -> DefaultTxTask<Self::Transaction> {
+		if !watched {
+			todo!()
+		};
 		let mut nonces = sink.nonces.write();
 		let nonce = if let Some(nonce) = nonces.get_mut(&hex::encode(account.clone())) {
 			*nonce = *nonce + 1;
@@ -151,10 +158,17 @@ impl TransactionBuilder for SubstrateTransactionBuilder {
 		account: &String,
 		nonce: &Option<u128>,
 		sink: &Self::Sink,
+		watched: bool,
 	) -> DefaultTxTask<Self::Transaction> {
-		DefaultTxTask::<Self::Transaction>::new_watched(
-			build_subxt_tx(account, nonce, sink, build_substrate_tx_payload).await,
-		)
+		if watched {
+			DefaultTxTask::<Self::Transaction>::new_watched(
+				build_subxt_tx(account, nonce, sink, build_substrate_tx_payload).await,
+			)
+		} else {
+			DefaultTxTask::<Self::Transaction>::new_unwatched(
+				build_subxt_tx(account, nonce, sink, build_substrate_tx_payload).await,
+			)
+		}
 	}
 }
 
@@ -176,10 +190,17 @@ impl TransactionBuilder for EthTransactionBuilder {
 		account: &String,
 		nonce: &Option<u128>,
 		sink: &Self::Sink,
+		watched: bool,
 	) -> DefaultTxTask<Self::Transaction> {
-		DefaultTxTask::<Self::Transaction>::new_watched(
-			build_subxt_tx(account, nonce, sink, build_eth_tx_payload).await,
-		)
+		if watched {
+			DefaultTxTask::<Self::Transaction>::new_watched(
+				build_subxt_tx(account, nonce, sink, build_eth_tx_payload).await,
+			)
+		} else {
+			DefaultTxTask::<Self::Transaction>::new_unwatched(
+				build_subxt_tx(account, nonce, sink, build_eth_tx_payload).await,
+			)
+		}
 	}
 }
 
@@ -198,16 +219,17 @@ async fn execute_scenario<
 	sink: S,
 	builder: B,
 	scenario: &SendingScenario,
+	watched: bool,
 ) {
 	let transactions = match scenario {
 		SendingScenario::OneShot { account, nonce } =>
-			vec![builder.build_transaction(account, nonce, &sink).await],
+			vec![builder.build_transaction(account, nonce, &sink, watched).await],
 		SendingScenario::FromSingleAccount { account, from, count } => {
 			let mut transactions = vec![];
 			let mut nonce = *from;
 
 			for _ in 0..*count {
-				transactions.push(builder.build_transaction(account, &nonce, &sink).await);
+				transactions.push(builder.build_transaction(account, &nonce, &sink, watched).await);
 				nonce = nonce.map(|n| n + 1);
 			}
 			transactions
@@ -218,8 +240,11 @@ async fn execute_scenario<
 			for account in *start_id..*last_id {
 				let mut nonce = *from;
 				for _ in 0..*count {
-					transactions
-						.push(builder.build_transaction(&account.to_string(), &nonce, &sink).await);
+					transactions.push(
+						builder
+							.build_transaction(&account.to_string(), &nonce, &sink, watched)
+							.await,
+					);
 					nonce = nonce.map(|n| n + 1);
 				}
 			}
@@ -252,34 +277,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let cli = cli::Cli::parse();
 
 	match &cli.command {
-		CliCommand::Tx { chain, ws, unwatched, block_monitor, mortal, log_file, scenario } => {
+		CliCommand::Tx { chain, ws, watched, block_monitor, mortal, log_file, scenario } => {
 			match chain {
 				ChainType::Fake => {
 					let sink = FakeTransactionSink::new();
 					let builder = FakeTransactionBuilder::new();
-					execute_scenario(sink, builder, scenario).await;
+					execute_scenario(sink, builder, scenario, *watched).await;
 				},
 				ChainType::Eth => {
+					let transaction_monitor =
+						if *block_monitor { Some(BlockMonitor::new(ws).await) } else { None };
+
 					let def = scenario.get_accounts_description();
 					let sink = EthTransactionsSink::new_with_uri_with_accounts_description(
 						ws,
 						def,
 						generate_ecdsa_keypair,
+						transaction_monitor,
 					)
 					.await;
 					let builder = EthTransactionBuilder::new();
-					execute_scenario(sink, builder, scenario).await;
+					execute_scenario(sink, builder, scenario, *watched).await;
 				},
 				ChainType::Sub => {
+					let transaction_monitor =
+						if *block_monitor { Some(BlockMonitor::new(ws).await) } else { None };
 					let def = scenario.get_accounts_description();
 					let sink = SubstrateTransactionsSink::new_with_uri_with_accounts_description(
 						ws,
 						def,
 						generate_sr25519_keypair,
+						transaction_monitor,
 					)
 					.await;
 					let builder = SubstrateTransactionBuilder::new();
-					execute_scenario(sink, builder, scenario).await;
+					execute_scenario(sink, builder, scenario, *watched).await;
 				},
 			};
 		},
@@ -298,6 +330,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						ws,
 						desc,
 						generate_ecdsa_keypair,
+						None,
 					)
 					.await;
 					let account =
@@ -315,6 +348,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						ws,
 						desc,
 						generate_sr25519_keypair,
+						None,
 					)
 					.await;
 					let account =
@@ -330,12 +364,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		CliCommand::BlockMonitor { chain, ws } => {
 			match chain {
 				ChainType::Sub => {
-					let block_monitor = BlockMonitor::<PolkadotConfig>::new(ws.clone()).await;
-					block_monitor.1.await;
+					let block_monitor = BlockMonitor::<PolkadotConfig>::new(ws).await;
+					async {
+						loop {
+							tokio::time::sleep(Duration::from_secs(10)).await
+						}
+					}
+					.await;
 				},
 				ChainType::Eth => {
-					let block_monitor = BlockMonitor::<EthRuntimeConfig>::new(ws.clone()).await;
-					block_monitor.1.await;
+					let block_monitor = BlockMonitor::<EthRuntimeConfig>::new(ws).await;
+					async {
+						loop {
+							tokio::time::sleep(Duration::from_secs(10)).await
+						}
+					}
+					.await;
 				},
 				ChainType::Fake => {
 					unimplemented!()
