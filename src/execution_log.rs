@@ -87,9 +87,11 @@ impl Display for Counters {
 		let buffered = self.buffered();
 		write!(
 			f,
-			"p {:7} s:{:7} v:{:7} f:{:7} d:{:7} buff:{:7}",
+			"p {:7} s:{:7} {:7}/{:7} v:{:7} f:{:7} d:{:7} buff:{:7}",
 			self.popped.load(Ordering::Relaxed),
 			self.sent.load(Ordering::Relaxed),
+			self.submit_and_watch_success.load(Ordering::Relaxed),
+			self.submit_and_watch_error.load(Ordering::Relaxed),
 			self.ts_validated.load(Ordering::Relaxed),
 			self.ts_finalized.load(Ordering::Relaxed),
 			self.ts_dropped.load(Ordering::Relaxed),
@@ -463,7 +465,7 @@ pub fn failure_reason_stats<'a, E: ExecutionLog + 'a>(
 
 pub fn make_stats<E: ExecutionLog>(logs: impl IntoIterator<Item = Arc<E>>, show_graphs: bool) {
 	let logs = logs.into_iter().collect::<Vec<_>>();
-	info!(total_count = logs.iter().count());
+	info!(target: STAT_TARGET, total_recorded_count = logs.iter().count());
 	single_stat("Time to dropped".into(), logs.iter(), E::time_to_dropped, show_graphs);
 	single_stat("Time to error".into(), logs.iter(), E::time_to_error, show_graphs);
 	single_stat("Time to invalid".into(), logs.iter(), E::time_to_invalid, show_graphs);

@@ -24,6 +24,7 @@ const DEFAULT_RESUBMIT_DELAY: u64 = 3000;
 
 #[derive(Debug)]
 pub enum ResubmitReason {
+	Banned,
 	Dropped,
 	Mortality,
 	RpcError,
@@ -48,6 +49,13 @@ impl NeedsResubmit for Error {
 				if code == 1016 {
 					return Some(ResubmitReason::Dropped);
 				}
+				//polkdot-sdk/substrate/client/rpc-api/author -> POOL_TEMPORARILY_BANNED
+				if code == 1012 {
+					return Some(ResubmitReason::Banned);
+				}
+				if code == jsonrpsee::types::error::ErrorCode::InternalError.code() {
+					return Some(ResubmitReason::RpcError);
+				}
 			}
 		}
 		return None;
@@ -69,7 +77,7 @@ pub struct DefaultResubmissionQueue<T: TxTask> {
 	ready_queue: Arc<RwLock<Vec<T>>>,
 	terminate: Arc<AtomicBool>,
 	forced_terminate: Arc<AtomicBool>,
-	tx: mpsc::Sender<ResubmittedTxTask<T>>,
+	resubmission_request_tx: mpsc::Sender<ResubmittedTxTask<T>>,
 	is_queue_empty: Arc<AtomicBool>,
 }
 
@@ -80,7 +88,7 @@ impl<T: TxTask> Clone for DefaultResubmissionQueue<T> {
 			terminate: self.terminate.clone(),
 			forced_terminate: self.forced_terminate.clone(),
 			is_queue_empty: self.is_queue_empty.clone(),
-			tx: self.tx.clone(),
+			resubmission_request_tx: self.resubmission_request_tx.clone(),
 		}
 	}
 }
@@ -89,23 +97,23 @@ const CHANNEL_CAPACITY: usize = 100_000;
 
 impl<T: TxTask + 'static> DefaultResubmissionQueue<T> {
 	pub fn new() -> (Self, ResubmissionQueueTask) {
-		let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
+		let (resubmission_request_tx, resubmission_request_rx) = mpsc::channel(CHANNEL_CAPACITY);
 		let s = Self {
 			ready_queue: Default::default(),
 			terminate: AtomicBool::new(false).into(),
 			forced_terminate: AtomicBool::new(false).into(),
 			is_queue_empty: AtomicBool::new(true).into(),
-			tx,
+			resubmission_request_tx,
 		};
-		(s.clone(), s.run(rx).boxed())
+		(s.clone(), s.run(resubmission_request_rx).boxed())
 	}
 
 	#[allow(dead_code)]
-	async fn run_naive(self, mut rx: mpsc::Receiver<ResubmittedTxTask<T>>) {
+	async fn run_naive(self, mut resubmission_request_rx: mpsc::Receiver<ResubmittedTxTask<T>>) {
 		let mut waiting_queue = FuturesUnordered::<ResubmittedTxTask<T>>::default();
 		loop {
 			trace!(target: LOG_TARGET, "B RUN ");
-			while let Ok(pending) = rx.try_recv() {
+			while let Ok(pending) = resubmission_request_rx.try_recv() {
 				waiting_queue.push(pending);
 			}
 			trace!(target: LOG_TARGET, "M RUN ");
@@ -136,7 +144,7 @@ impl<T: TxTask + 'static> DefaultResubmissionQueue<T> {
 		}
 	}
 
-	async fn run(self, mut rx: mpsc::Receiver<ResubmittedTxTask<T>>) {
+	async fn run(self, mut resubmission_request_rx: mpsc::Receiver<ResubmittedTxTask<T>>) {
 		let mut waiting_queue = FuturesUnordered::<ResubmittedTxTask<T>>::default();
 		loop {
 			if self.forced_terminate.load(Ordering::Relaxed) {
@@ -162,7 +170,7 @@ impl<T: TxTask + 'static> DefaultResubmissionQueue<T> {
 						}
 					}
 				}
-				pending = rx.recv() => {
+				pending = resubmission_request_rx.recv() => {
 					if let Some(pending) = pending {
 						self.is_queue_empty.store(false, Ordering::Relaxed);
 						waiting_queue.push(pending);
@@ -180,6 +188,27 @@ impl<T: TxTask> DefaultResubmissionQueue<T> {
 		tokio::time::sleep(Duration::from_millis(DEFAULT_RESUBMIT_DELAY)).await;
 		trace!(target: LOG_TARGET, "A wait {:?}", t.tx().hash());
 		t.handle_resubmit_request()
+	}
+
+	fn get_lowest_nonce(&self) -> Option<T> {
+		let mut queue = self.ready_queue.write();
+
+		if queue.is_empty() {
+			return None;
+		}
+
+		let mut min_index = 0;
+		let mut min_nonce = queue[0].tx().nonce();
+
+		for (i, item) in queue.iter().enumerate().skip(1) {
+			let nonce = queue[0].tx().nonce();
+			if nonce < min_nonce {
+				min_index = i;
+				min_nonce = nonce;
+			}
+		}
+
+		Some(queue.swap_remove(min_index))
 	}
 }
 
@@ -201,18 +230,21 @@ impl<T: TxTask + 'static> ResubmissionQueue<T> for DefaultResubmissionQueue<T> {
 				target:LOG_TARGET,
 				is_queue_empty = self.is_queue_empty.load(Ordering::Relaxed),
 				ready_queue_empty = self.ready_queue.write().is_empty(),
-				channel_empty = self.tx.capacity() == CHANNEL_CAPACITY,
+				channel_empty = self.resubmission_request_tx.capacity() == CHANNEL_CAPACITY,
 				"is_empty"
 			);
 		}
 		self.is_queue_empty.load(Ordering::Relaxed) &&
 			self.ready_queue.write().is_empty() &&
-			self.tx.capacity() == CHANNEL_CAPACITY
+			self.resubmission_request_tx.capacity() == CHANNEL_CAPACITY
 	}
 
 	async fn resubmit(&self, task: T, _reason: ResubmitReason) {
 		trace!(target: LOG_TARGET, "B PUSH {:?}", task.tx().hash());
-		self.tx.send(Box::pin(Self::wait(task))).await.expect("send shall not fail");
+		self.resubmission_request_tx
+			.send(Box::pin(Self::wait(task)))
+			.await
+			.expect("send shall not fail");
 		trace!(target: LOG_TARGET, "A PUSH");
 	}
 
@@ -220,7 +252,8 @@ impl<T: TxTask + 'static> ResubmissionQueue<T> for DefaultResubmissionQueue<T> {
 	//and runner shall log the this event.
 	fn pop(&self) -> Option<T> {
 		trace!(target: LOG_TARGET, "B POP");
-		let r = self.ready_queue.write().pop();
+		// let r = self.ready_queue.write().pop();
+		let r = self.get_lowest_nonce();
 		trace!(target: LOG_TARGET, "A POP {}", r.is_some());
 		r
 	}

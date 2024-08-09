@@ -1,7 +1,7 @@
 use crate::{
 	execution_log::{
 		journal::Journal, make_stats, Counters, DefaultExecutionLog, ExecutionEvent, ExecutionLog,
-		Logs,
+		Logs, STAT_TARGET,
 	},
 	resubmission::{NeedsResubmit, ResubmissionQueue, ResubmitReason},
 	transaction::{ResubmitHandler, Transaction, TransactionStatusIsTerminal, TransactionsSink},
@@ -123,15 +123,22 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 						continue;
 					}
 				}
-				ExecutionResult::Error(self.tx().hash())
+				//shall not happen to be here
+				panic!();
+				// ExecutionResult::Error(self.tx().hash())
 			},
 			Err(e) => {
-				debug!(hash=?self.tx().hash(),"error: {e:?}");
+				let (hash, nonce) = (self.tx().hash(), self.tx().nonce());
 				let result = if let Some(reason) = e.needs_resubmission() {
 					ExecutionResult::NeedsResubmit(reason, self)
 				} else {
+					info!(nonce=?self.tx().nonce(),"submit_and_watch: error: {e:?}");
 					ExecutionResult::Error(self.tx().hash())
 				};
+				info!(?hash, nonce, "error: {e:?} {result:?}");
+				if !matches!(result, ExecutionResult::NeedsResubmit(ResubmitReason::Dropped, _)) {
+					info!(?hash, nonce, "error: {e:?} {result:?}");
+				}
 				log.push_event(ExecutionEvent::submit_and_watch_result(Err(e)));
 				result
 			},
@@ -262,10 +269,12 @@ where
 		let mut pushed = 0;
 		let to_consume = if single { min(1, gap) } else { gap };
 		let counters_displayed = format!("{}", self.event_counters);
+		let mut nonces = vec![];
 		for _ in 0..to_consume {
 			let task = self.pop();
 			if let Some(task) = task {
 				let hash = task.tx().hash();
+				nonces.push(task.tx().nonce());
 				let log = self.logs[&task.tx().hash()].clone();
 				log.push_event(ExecutionEvent::popped());
 				trace!(target:LOG_TARGET,hash = ?hash, workers_len=workers.len(), "before push");
@@ -276,9 +285,10 @@ where
 				break;
 			};
 		}
+		let min_nonce_sent = nonces.iter().min();
 
 		let display = if let Some(last_displayed) = self.last_displayed {
-			last_displayed.elapsed() > Duration::from_millis(1000)
+			last_displayed.elapsed() > Duration::from_millis(200)
 		} else {
 			true
 		};
@@ -291,6 +301,7 @@ where
 				current_count,
 				initial_task = self.initial_tasks,
 				pushed,
+				min_nonce_sent,
 				"consume pending {}",
 				counters_displayed,
 			);
@@ -298,6 +309,8 @@ where
 	}
 
 	pub async fn run_poc2(&mut self) {
+		let start = Instant::now();
+		let original_transactions_count = self.transactions.len();
 		let mut workers = FuturesUnordered::new();
 
 		let mut i = 0;
@@ -363,6 +376,7 @@ where
 
 		// info!("logs {:#?}", self.logs);
 		Journal::<T>::save_logs(self.logs.clone());
+		info!(target: STAT_TARGET, total_duration = ?start.elapsed(), ?original_transactions_count);
 		make_stats(self.logs.values().cloned(), false)
 	}
 }

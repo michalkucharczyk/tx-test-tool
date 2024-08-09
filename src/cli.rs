@@ -20,13 +20,17 @@ pub enum CliCommand {
 		ws: String,
 		/// Send transaction with event listener (submit_and_watch).
 		#[clap(long)]
-		watched: bool,
+		unwatched: bool,
 		/// Spawn block monitor for checking if transactions are included in finalized blocks.
 		#[clap(long)]
 		block_monitor: bool,
 		/// Use mortal transactions.
 		#[clap(long)]
 		mortal: Option<u32>,
+		/// Send transactions threshold, sends the batch when number of pedning extrinsics drops
+		/// below this number.
+		#[clap(long, default_value_t = 10000)]
+		send_threshold: u32,
 		/// Override log file name (out_yyyymmdd_hhmmss.json)
 		#[clap(long)]
 		log_file: Option<String>,

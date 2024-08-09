@@ -98,7 +98,7 @@ trait TransactionBuilder {
 		account: &String,
 		nonce: &Option<u128>,
 		sink: &Self::Sink,
-		watched: bool,
+		unwatched: bool,
 	) -> DefaultTxTask<Self::Transaction>;
 }
 
@@ -114,9 +114,9 @@ impl TransactionBuilder for FakeTransactionBuilder {
 		account: &String,
 		nonce: &Option<u128>,
 		sink: &Self::Sink,
-		watched: bool,
+		unwatched: bool,
 	) -> DefaultTxTask<Self::Transaction> {
-		if !watched {
+		if unwatched {
 			todo!()
 		};
 		let mut nonces = sink.nonces.write();
@@ -158,14 +158,14 @@ impl TransactionBuilder for SubstrateTransactionBuilder {
 		account: &String,
 		nonce: &Option<u128>,
 		sink: &Self::Sink,
-		watched: bool,
+		unwatched: bool,
 	) -> DefaultTxTask<Self::Transaction> {
-		if watched {
-			DefaultTxTask::<Self::Transaction>::new_watched(
+		if unwatched {
+			DefaultTxTask::<Self::Transaction>::new_unwatched(
 				build_subxt_tx(account, nonce, sink, build_substrate_tx_payload).await,
 			)
 		} else {
-			DefaultTxTask::<Self::Transaction>::new_unwatched(
+			DefaultTxTask::<Self::Transaction>::new_watched(
 				build_subxt_tx(account, nonce, sink, build_substrate_tx_payload).await,
 			)
 		}
@@ -190,14 +190,14 @@ impl TransactionBuilder for EthTransactionBuilder {
 		account: &String,
 		nonce: &Option<u128>,
 		sink: &Self::Sink,
-		watched: bool,
+		unwatched: bool,
 	) -> DefaultTxTask<Self::Transaction> {
-		if watched {
-			DefaultTxTask::<Self::Transaction>::new_watched(
+		if unwatched {
+			DefaultTxTask::<Self::Transaction>::new_unwatched(
 				build_subxt_tx(account, nonce, sink, build_eth_tx_payload).await,
 			)
 		} else {
-			DefaultTxTask::<Self::Transaction>::new_unwatched(
+			DefaultTxTask::<Self::Transaction>::new_watched(
 				build_subxt_tx(account, nonce, sink, build_eth_tx_payload).await,
 			)
 		}
@@ -219,17 +219,19 @@ async fn execute_scenario<
 	sink: S,
 	builder: B,
 	scenario: &SendingScenario,
-	watched: bool,
+	unwatched: bool,
+	send_threshold: usize,
 ) {
 	let transactions = match scenario {
 		SendingScenario::OneShot { account, nonce } =>
-			vec![builder.build_transaction(account, nonce, &sink, watched).await],
+			vec![builder.build_transaction(account, nonce, &sink, unwatched).await],
 		SendingScenario::FromSingleAccount { account, from, count } => {
 			let mut transactions = vec![];
 			let mut nonce = *from;
 
 			for _ in 0..*count {
-				transactions.push(builder.build_transaction(account, &nonce, &sink, watched).await);
+				transactions
+					.push(builder.build_transaction(account, &nonce, &sink, unwatched).await);
 				nonce = nonce.map(|n| n + 1);
 			}
 			transactions
@@ -242,7 +244,7 @@ async fn execute_scenario<
 				for _ in 0..*count {
 					transactions.push(
 						builder
-							.build_transaction(&account.to_string(), &nonce, &sink, watched)
+							.build_transaction(&account.to_string(), &nonce, &sink, unwatched)
 							.await,
 					);
 					nonce = nonce.map(|n| n + 1);
@@ -259,7 +261,7 @@ async fn execute_scenario<
 		DefaultTxTask<T>,
 		S,
 		DefaultResubmissionQueue<DefaultTxTask<T>>,
-	>::new(15000, sink, transactions, queue);
+	>::new(send_threshold, sink, transactions, queue);
 
 	ctrlc::set_handler(move || {
 		block_on(stop_runner_tx.send(())).expect("Could not send signal on channel.")
@@ -277,12 +279,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let cli = cli::Cli::parse();
 
 	match &cli.command {
-		CliCommand::Tx { chain, ws, watched, block_monitor, mortal, log_file, scenario } => {
+		CliCommand::Tx {
+			chain,
+			ws,
+			unwatched,
+			block_monitor,
+			mortal,
+			log_file,
+			scenario,
+			send_threshold,
+		} => {
 			match chain {
 				ChainType::Fake => {
 					let sink = FakeTransactionSink::new();
 					let builder = FakeTransactionBuilder::new();
-					execute_scenario(sink, builder, scenario, *watched).await;
+					execute_scenario(sink, builder, scenario, *unwatched, *send_threshold as usize)
+						.await;
 				},
 				ChainType::Eth => {
 					let transaction_monitor =
@@ -297,7 +309,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					)
 					.await;
 					let builder = EthTransactionBuilder::new();
-					execute_scenario(sink, builder, scenario, *watched).await;
+					execute_scenario(sink, builder, scenario, *unwatched, *send_threshold as usize)
+						.await;
 				},
 				ChainType::Sub => {
 					let transaction_monitor =
@@ -311,7 +324,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					)
 					.await;
 					let builder = SubstrateTransactionBuilder::new();
-					execute_scenario(sink, builder, scenario, *watched).await;
+					execute_scenario(sink, builder, scenario, *unwatched, *send_threshold as usize)
+						.await;
 				},
 			};
 		},
