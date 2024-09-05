@@ -24,6 +24,7 @@ use subxt::{
 		CheckNonceParams,
 	},
 	dynamic::{At, Value},
+	ext::scale_value::value,
 	rpc_params,
 	tx::{DynamicPayload, Signer, SubmittableExtrinsic},
 	OnlineClient, PolkadotConfig,
@@ -431,14 +432,42 @@ impl<T, A: Send + Sync + AsRef<[u8]>> GenerateTxPayloadFunction<A> for T where
 
 pub fn build_substrate_tx_payload(to_account_id: AccountIdOf<PolkadotConfig>) -> DynamicPayload {
 	trace!(target:LOG_TARGET,to_account=hex::encode(to_account_id.clone()),"build_payload (sub)" );
+	//works for rococo:
 	subxt::dynamic::tx(
 		"Balances",
 		"transfer_keep_alive",
-		vec![
-			Value::unnamed_variant("Id", [Value::from_bytes(to_account_id)]),
-			Value::u128(1u32.into()),
-		],
+		vec![value!(Id(Value::from_bytes(to_account_id))), Value::u128(1u32.into())],
 	)
+
+	//works for rococo / asset-hub:
+	// subxt::dynamic::tx(
+	// 	"Balances",
+	// 	"transfer_keep_alive",
+	// 	vec![
+	// 		value!({dest: Id(Value::from_bytes(to_account_id))}),
+	// 		value!({value: Value::u128(1u32.into())}),
+	// 	],
+	// )
+
+	// Basically though, a rust struct is the same as a named composite value, any
+	// sequence/array/tuple is the same as an unnamed composite value, and then there are primitive
+	// values to map to rust primitive types and variant values for enum variants (whose args are
+	// then named or unnamed composites to correspond to enums with named or unnamed args)
+	// subxt::dynamic::tx(
+	// 	"Balances",
+	// 	"transfer_keep_alive",
+	// 	// vec![value!(Id(Value::from_bytes(to_account_id))), Value::u128(1u32.into())],
+	// 	// vec![Value::from_bytes(to_account_id), Value::u128(1u32.into())],
+	// 	vec![
+	// 		Value::unnamed_composite(vec![Value::from_bytes(to_account_id)]),
+	// 		Value::u128(1u32.into()),
+	// 	],
+	// )
+	// vec![
+	// 	// Value::unnamed_composite(vec![Value::from_bytes(to_account_id)]),
+	// 	Value::unnamed_variant("Id", [Value::from_bytes(to_account_id)]),
+	// 	Value::u128(1u32.into()),
+	// ],
 }
 
 pub fn build_eth_tx_payload(to_account_id: AccountId20) -> DynamicPayload {
