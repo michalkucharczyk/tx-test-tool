@@ -76,6 +76,7 @@ pub struct Counters {
 	finalized_monitor: AtomicUsize,
 
 	ts_validated: AtomicUsize,
+	ts_broadcasted: AtomicUsize,
 	ts_finalized: AtomicUsize,
 	ts_dropped: AtomicUsize,
 	ts_invalid: AtomicUsize,
@@ -87,12 +88,13 @@ impl Display for Counters {
 		let buffered = self.buffered();
 		write!(
 			f,
-			"p {:7} s:{:7} {:7}/{:7} v:{:7} f:{:7} d:{:7} buff:{:7}",
+			"p {:7} s:{:7} {:7}/{:7} v:{:7} b{:7} f:{:7} d:{:7} buff:{:7}",
 			self.popped.load(Ordering::Relaxed),
 			self.sent.load(Ordering::Relaxed),
 			self.submit_and_watch_success.load(Ordering::Relaxed),
 			self.submit_and_watch_error.load(Ordering::Relaxed),
 			self.ts_validated.load(Ordering::Relaxed),
+			self.ts_broadcasted.load(Ordering::Relaxed),
 			self.ts_finalized.load(Ordering::Relaxed),
 			self.ts_dropped.load(Ordering::Relaxed),
 			buffered
@@ -108,7 +110,9 @@ impl Counters {
 	pub fn buffered(&self) -> usize {
 		self.popped.load(Ordering::Relaxed) -
 			(self.submit_and_watch_success.load(Ordering::Relaxed) +
-				self.submit_and_watch_error.load(Ordering::Relaxed))
+				self.submit_and_watch_error.load(Ordering::Relaxed)) -
+			(self.submit_success.load(Ordering::Relaxed) +
+				self.submit_error.load(Ordering::Relaxed))
 	}
 
 	fn count_event<H: BlockHash>(&self, event: &ExecutionEvent<H>) {
@@ -125,13 +129,12 @@ impl Counters {
 			ExecutionEvent::FinalizedMonitor(_, _) => Self::inc(&self.finalized_monitor),
 			ExecutionEvent::TxPoolEvent(_, status) => match status {
 				TransactionStatus::Validated => Self::inc(&self.ts_validated),
+				TransactionStatus::Broadcasted(_) => Self::inc(&self.ts_broadcasted),
 				TransactionStatus::Finalized(_) => Self::inc(&self.ts_finalized),
 				TransactionStatus::Dropped(_) => Self::inc(&self.ts_dropped),
 				TransactionStatus::Invalid(_) => Self::inc(&self.ts_invalid),
 				TransactionStatus::Error(_) => Self::inc(&self.ts_error),
-				TransactionStatus::NoLongerInBestBlock |
-				TransactionStatus::Broadcasted(_) |
-				TransactionStatus::InBlock(_) => {},
+				TransactionStatus::NoLongerInBestBlock | TransactionStatus::InBlock(_) => {},
 			},
 		}
 	}
