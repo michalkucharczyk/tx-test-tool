@@ -1,6 +1,5 @@
-use std::ops::Range;
-
 use clap::{Parser, Subcommand, ValueEnum};
+use std::ops::Range;
 
 #[derive(Parser)]
 #[clap(name = "txtt")]
@@ -78,6 +77,29 @@ pub enum CliCommand {
 		/// Display errors.
 		#[clap(long)]
 		show_errors: bool,
+	},
+	/// Generate a list of endowed accounts.
+	GenerateEndowedAccounts {
+		/// The type of chain used to store the log file..
+		#[clap(long, default_value = "sub")]
+		chain: ChainType,
+		/// First account identifier to be generated (index of the account used for a
+		/// derivation).
+		#[clap(long)]
+		start_id: u32,
+		/// Last account identifier to be generated.
+		#[clap(long)]
+		last_id: u32,
+		/// Initial balance
+		#[clap(long, default_value = "100000000000000")]
+		balance: u128,
+		/// File where patch with funded accounts json will be stored. Or if the input chain-spec
+		/// was provided, the location of chain spec with endowed accounts injected.
+		#[clap(long)]
+		out_file_name: String,
+		/// The plain chain spec file that will be used to inject endowed accounts into.
+		#[clap(long)]
+		chain_spec: Option<String>,
 	},
 }
 

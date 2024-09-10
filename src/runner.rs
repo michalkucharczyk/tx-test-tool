@@ -390,9 +390,7 @@ mod tests {
 		init_logger,
 		resubmission::DefaultResubmissionQueue,
 		subxt_api_connector,
-		subxt_transaction::{
-			EthRuntimeConfig, EthTransaction, EthTransactionsSink, SubxtTransactionsSink,
-		},
+		subxt_transaction::{EthRuntimeConfig, EthTransaction, EthTransactionsSink},
 		transaction::AccountMetadata,
 	};
 	use futures::future::join;

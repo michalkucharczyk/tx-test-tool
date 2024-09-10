@@ -1,20 +1,20 @@
 #![allow(dead_code)]
-#![allow(unused_imports)]
 #![allow(unused_variables)]
 
-use std::time::Duration;
+use std::{fs, io::BufReader, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use block_monitor::BlockMonitor;
 use cli::{ChainType, SendingScenario};
 use execution_log::{journal::Journal, make_stats};
-// use eth_transaction::{build_eth_tx, EthTransaction, EthTransactionsSink};
 use fake_transaction::{FakeHash, FakeTransaction};
 use fake_transaction_sink::FakeTransactionSink;
 use futures::{executor::block_on, future::join};
+use parity_scale_codec::Compact;
 use resubmission::DefaultResubmissionQueue;
 use runner::{DefaultTxTask, Runner};
-use subxt::{config::BlockHash, PolkadotConfig};
+use std::fs::File;
+use subxt::{config::BlockHash, ext::frame_metadata::RuntimeMetadataPrefixed, PolkadotConfig};
 use subxt_transaction::{
 	build_eth_tx_payload, build_substrate_tx_payload, build_subxt_tx, EthTransaction,
 	EthTransactionsSink, HashOf, SubstrateTransaction,
@@ -39,6 +39,7 @@ use transaction::{ResubmitHandler, Transaction, TransactionsSink};
 use crate::{
 	cli::{AccountsDescription, CliCommand},
 	execution_log::STAT_TARGET,
+	runner::TxTask,
 	subxt_transaction::{
 		generate_ecdsa_keypair, generate_sr25519_keypair, EthRuntimeConfig,
 		SubstrateTransactionsSink,
@@ -210,52 +211,104 @@ impl FakeTransactionBuilder {
 	}
 }
 
-async fn execute_scenario<
+#[derive(Clone, Debug)]
+struct TransactionBuildParams {
+	account: String,
+	nonce: Option<u128>,
+}
+
+async fn build_transactions<H, T, S, B>(
+	builder: B,
+	sink: S,
+	unwatched: bool,
+	defs: Vec<TransactionBuildParams>,
+) -> Vec<DefaultTxTask<T>>
+where
 	H: BlockHash + 'static,
 	T: Transaction<HashType = H> + ResubmitHandler + Send + 'static,
-	S: TransactionsSink<H> + 'static,
-	B: TransactionBuilder<HashType = H, Transaction = T, Sink = S>,
->(
+	S: TransactionsSink<H> + 'static + Clone,
+	B: TransactionBuilder<HashType = H, Transaction = T, Sink = S> + Send + Sync + 'static,
+{
+	let n = defs.len();
+	let t = std::cmp::min(
+		n,
+		std::thread::available_parallelism().unwrap_or(1usize.try_into().unwrap()).get(),
+	);
+	let defs = Arc::<Vec<TransactionBuildParams>>::from(defs);
+	let builder = Arc::new(builder);
+	let mut threads = Vec::new();
+
+	(0..t).into_iter().for_each(|thread_idx| {
+		let chunk = ((thread_idx * n) / t)..(((thread_idx + 1) * n) / t);
+		let defs = defs.clone();
+		let builder = builder.clone();
+		let sink = sink.clone();
+		threads.push(tokio::task::spawn(async move {
+			let mut txs = vec![];
+			for i in chunk {
+				let d = defs[i].clone();
+				txs.push(builder.build_transaction(&d.account, &d.nonce, &sink, unwatched).await);
+			}
+			txs
+		}));
+	});
+
+	let mut results = vec![];
+	for handle in threads {
+		let result = handle.await.unwrap();
+		results.push(result);
+	}
+	let mut v: Vec<_> = results.into_iter().flatten().collect();
+	v.sort_by_key(|k| k.tx().nonce());
+	v
+}
+
+async fn execute_scenario<H, T, S, B>(
 	sink: S,
 	builder: B,
 	scenario: &SendingScenario,
 	unwatched: bool,
 	send_threshold: usize,
-) {
+) where
+	H: BlockHash + 'static,
+	T: Transaction<HashType = H> + ResubmitHandler + Send + 'static,
+	S: TransactionsSink<H> + 'static + Clone,
+	B: TransactionBuilder<HashType = H, Transaction = T, Sink = S> + Send + Sync + 'static,
+{
 	let transactions = match scenario {
 		SendingScenario::OneShot { account, nonce } =>
 			vec![builder.build_transaction(account, nonce, &sink, unwatched).await],
 		SendingScenario::FromSingleAccount { account, from, count } => {
-			let mut transactions = vec![];
+			let mut transactions_defs = vec![];
 			let mut nonce = *from;
 
 			for _ in 0..*count {
-				transactions
-					.push(builder.build_transaction(account, &nonce, &sink, unwatched).await);
+				transactions_defs.push(TransactionBuildParams { account: account.clone(), nonce });
 				nonce = nonce.map(|n| n + 1);
 			}
+			let transactions =
+				build_transactions(builder, sink.clone(), unwatched, transactions_defs).await;
+
 			transactions
 		},
 		SendingScenario::FromManyAccounts { start_id, last_id, from, count } => {
-			let mut transactions = vec![];
+			let mut transactions_defs = vec![];
 
-			for account in *start_id..*last_id {
+			for account in *start_id..=*last_id {
 				let mut nonce = *from;
 				for _ in 0..*count {
-					transactions.push(
-						builder
-							.build_transaction(&account.to_string(), &nonce, &sink, unwatched)
-							.await,
-					);
+					transactions_defs
+						.push(TransactionBuildParams { account: account.to_string(), nonce });
 					nonce = nonce.map(|n| n + 1);
 				}
 			}
+			let transactions =
+				build_transactions(builder, sink.clone(), unwatched, transactions_defs).await;
 			transactions
 		},
 	};
 
 	let transactions = transactions.into_iter().rev().collect();
-	// let transactions = tx_command.generate_transactions(cli);
 	let (queue, queue_task) = DefaultResubmissionQueue::new();
 	let (stop_runner_tx, mut runner) = Runner::<
 		DefaultTxTask<T>,
@@ -269,8 +322,6 @@ async fn execute_scenario<
 	.expect("Error setting Ctrl-C handler");
 	join(queue_task, runner.run_poc2()).await;
 }
-
-fn send_loop() {}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -374,6 +425,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 		},
 		CliCommand::Metadata { ws } => {
 			// Handle metadata command
+			let api = subxt::OnlineClient::<EthRuntimeConfig>::from_insecure_url(ws).await?;
+			let runtime_apis = api.runtime_api().at_latest().await?;
+			let (_, meta): (Compact<u32>, RuntimeMetadataPrefixed) =
+				runtime_apis.call_raw("Metadata_metadata", None).await?;
+			println!("{meta:#?}");
 		},
 		CliCommand::BlockMonitor { chain, ws } => {
 			match chain {
@@ -413,6 +469,78 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				let logs = Journal::<DefaultTxTask<FakeTransaction>>::load_logs(log_file);
 				make_stats(logs.values().cloned(), *show_graphs);
 			},
+		},
+		CliCommand::GenerateEndowedAccounts {
+			chain,
+			start_id,
+			last_id,
+			balance,
+			out_file_name,
+			chain_spec,
+		} => {
+			let accounts_description = AccountsDescription::Derived(*start_id..last_id + 1);
+			let funded_accounts = match chain {
+				ChainType::Sub => {
+					let accounts = subxt_transaction::derive_accounts::<PolkadotConfig, _, _>(
+						accounts_description.clone(),
+						&subxt_transaction::SENDER_SEED,
+						generate_sr25519_keypair,
+					);
+					accounts
+						.values()
+						.map(|keypair| {
+							serde_json::json!((
+								<PolkadotConfig as subxt::Config>::AccountId::from(
+									keypair.0.clone().public_key()
+								),
+								balance,
+							))
+						})
+						.collect::<Vec<_>>()
+				},
+				ChainType::Eth => {
+					let accounts = subxt_transaction::derive_accounts::<EthRuntimeConfig, _, _>(
+						accounts_description.clone(),
+						&subxt_transaction::SENDER_SEED,
+						generate_ecdsa_keypair,
+					);
+					accounts
+						.values()
+						.map(|keypair| {
+							serde_json::json!((
+								"0x".to_string() + &hex::encode(&keypair.0.clone().account_id()),
+								balance,
+							))
+						})
+						.collect::<Vec<_>>()
+				},
+				ChainType::Fake => Default::default(),
+			};
+
+			if let Some(chain_spec) = chain_spec {
+				let file = File::open(chain_spec)?;
+				let reader = BufReader::new(file);
+				let mut chain_spec: serde_json::Value = serde_json::from_reader(reader)?;
+
+				if let Some(balances) = chain_spec["genesis"]["runtimeGenesis"]["patch"]["balances"]
+					["balances"]
+					.as_array_mut()
+				{
+					balances.extend(funded_accounts);
+				} else {
+					return Err("Balances array not found in provided chain-spec".into());
+				}
+
+				fs::write(
+					out_file_name,
+					serde_json::to_string_pretty(&chain_spec)
+						.map_err(|e| format!("to pretty failed: {e}"))?,
+				)
+				.map_err(|err| err.to_string())?;
+			} else {
+				let json_object = serde_json::json!({"balances":{"balances":funded_accounts}});
+				fs::write(out_file_name, serde_json::to_string_pretty(&json_object)?.as_bytes())?;
+			}
 		},
 	};
 	Ok(())

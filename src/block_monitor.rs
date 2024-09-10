@@ -1,8 +1,8 @@
-use std::{collections::HashMap, marker::PhantomData, pin::Pin, time::Instant};
+use std::{collections::HashMap, marker::PhantomData, pin::Pin};
 
 use crate::transaction::TransactionMonitor;
 use async_trait::async_trait;
-use futures::{Future, FutureExt};
+use futures::Future;
 use subxt::{blocks::Block, config::Hasher, OnlineClient};
 use subxt_core::config::Header;
 use tokio::{
@@ -20,6 +20,7 @@ pub type TxFoundListener<H> = oneshot::Receiver<H>;
 type TxFoundListenerTrigger<H> = oneshot::Sender<H>;
 type HashOf<C> = <C as subxt::Config>::Hash;
 
+#[derive(Clone)]
 pub struct BlockMonitor<C: subxt::Config> {
 	listener_request_tx: mpsc::Sender<(HashOf<C>, TxFoundListenerTrigger<HashOf<C>>)>,
 	_p: PhantomData<C>,

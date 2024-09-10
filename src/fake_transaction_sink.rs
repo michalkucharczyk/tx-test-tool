@@ -15,6 +15,7 @@ use std::{
 };
 use tracing::trace;
 
+#[derive(Clone)]
 pub struct FakeTransactionSink {
 	txs: Arc<RwLock<HashSet<FakeHash>>>,
 	pub(crate) nonces: Arc<RwLock<HashMap<String, u128>>>,

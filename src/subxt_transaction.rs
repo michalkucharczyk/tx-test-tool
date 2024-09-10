@@ -38,6 +38,7 @@ use tracing::{debug, trace};
 
 const LOG_TARGET: &str = "subxt_tx";
 
+#[derive(Clone)]
 pub enum EthRuntimeConfig {}
 impl subxt::Config for EthRuntimeConfig {
 	type Hash = subxt::utils::H256;
@@ -103,13 +104,14 @@ impl<C: subxt::Config> ResubmitHandler for SubxtTransaction<C> {
 
 type StreamOf<I> = Pin<Box<dyn futures::Stream<Item = I> + Send>>;
 
+#[derive(Clone)]
 pub struct SubxtTransactionsSink<C: subxt::Config, KP: Signer<C>> {
 	api: OnlineClient<C>,
 	from_accounts: Arc<RwLock<HashMap<String, (KP, AccountMetadata)>>>,
 	to_accounts: Arc<RwLock<HashMap<String, (KP, AccountMetadata)>>>,
 	nonces: Arc<RwLock<HashMap<String, u128>>>,
 	rpc_client: RpcClient,
-	current_pending_extrinsics: RwLock<Option<(Instant, usize)>>,
+	current_pending_extrinsics: Arc<RwLock<Option<(Instant, usize)>>>,
 	transaction_monitor: Option<BlockMonitor<C>>,
 }
 
@@ -130,7 +132,7 @@ where
 			to_accounts: Default::default(),
 			nonces: Default::default(),
 			rpc_client: RpcClient::from_url("ws://127.0.0.1:9933").await.expect(EXPECT_CONNECT),
-			current_pending_extrinsics: None.into(),
+			current_pending_extrinsics: Arc::new(None.into()),
 			transaction_monitor: None,
 		}
 	}
@@ -142,7 +144,7 @@ where
 			to_accounts: Default::default(),
 			nonces: Default::default(),
 			rpc_client: RpcClient::from_url(uri).await.expect(EXPECT_CONNECT),
-			current_pending_extrinsics: None.into(),
+			current_pending_extrinsics: Arc::new(None.into()),
 			transaction_monitor: None,
 		}
 	}
@@ -165,7 +167,7 @@ where
 			to_accounts: Arc::from(RwLock::from(to_accounts)),
 			nonces: Default::default(),
 			rpc_client: RpcClient::from_url(uri).await.expect(EXPECT_CONNECT),
-			current_pending_extrinsics: None.into(),
+			current_pending_extrinsics: Arc::new(None.into()),
 			transaction_monitor,
 		}
 	}
@@ -194,14 +196,24 @@ where
 		&self,
 		account: AccountIdOf<C>,
 	) -> Result<u128, Box<dyn std::error::Error>> {
-		if let Some(nonce) = self.nonces.write().get_mut(&hex::encode(account.clone())) {
+		let is_nonce_set = {
+			let nonces = self.nonces.read();
+			nonces.get(&hex::encode(account.clone())).cloned()
+		};
+
+		let remote_nonce = if let Some(nonce) = is_nonce_set {
+			nonce
+		} else {
+			check_account_nonce(self.api.clone(), account.clone()).await?
+		};
+
+		let mut nonces = self.nonces.write();
+		if let Some(nonce) = nonces.get_mut(&hex::encode(account.clone())) {
 			*nonce = *nonce + 1;
 			return Ok(*nonce)
-		}
-		{
-			let nonce = check_account_nonce(self.api.clone(), account.clone()).await?;
-			self.nonces.write().insert(hex::encode(account), nonce);
-			Ok(nonce)
+		} else {
+			nonces.insert(hex::encode(account), remote_nonce);
+			Ok(remote_nonce)
 		}
 	}
 
@@ -306,9 +318,9 @@ pub enum AccountGenerateRequest {
 	Derived(String, u32),
 }
 
-const SENDER_SEED: &str = "//Sender";
-const RECEIVER_SEED: &str = "//Receiver";
-const SEED: &str = "bottom drive obey lake curtain smoke basket hold race lonely fit walk";
+pub const SENDER_SEED: &str = "//Sender";
+pub const RECEIVER_SEED: &str = "//Receiver";
+pub const SEED: &str = "bottom drive obey lake curtain smoke basket hold race lonely fit walk";
 
 pub fn generate_ecdsa_keypair(description: AccountGenerateRequest) -> EthKeypair {
 	match description {
@@ -546,14 +558,14 @@ where
 
 #[cfg(test)]
 mod tests {
-	use super::*;
-	use crate::init_logger;
-	use futures::StreamExt;
-	use subxt::{
-		config::substrate::SubstrateExtrinsicParamsBuilder as Params, dynamic::Value, OnlineClient,
-	};
-	use subxt_signer::eth::dev;
-	use tracing::info;
+	// use super::*;
+	// use crate::init_logger;
+	// use futures::StreamExt;
+	// use subxt::{
+	// 	config::substrate::SubstrateExtrinsicParamsBuilder as Params, dynamic::Value, OnlineClient,
+	// };
+	// use subxt_signer::eth::dev;
+	// use tracing::info;
 
 	#[tokio::test]
 	async fn placeholder() -> Result<(), Box<dyn std::error::Error>> {
