@@ -56,22 +56,26 @@ impl<C: subxt::Config> BlockMonitor<C> {
 	async fn handle_block(
 		callbacks: &mut HashMap<HashOf<C>, TxFoundListenerTrigger<HashOf<C>>>,
 		block: Block<C, OnlineClient<C>>,
+		finalized: bool,
 	) -> Result<(), Box<dyn std::error::Error>> {
 		let block_number: u64 = block.header().number().into();
 		let block_hash = block.hash();
 
 		let extrinsics = block.extrinsics().await?;
 		let extrinsics_count = extrinsics.len();
-		for ext in extrinsics.iter() {
-			let ext = ext?;
-			let hash = <C as subxt::Config>::Hasher::hash_of(&ext.bytes());
-			if let Some(trigger) = callbacks.remove(&hash) {
-				trace!(?hash, "found transaction, notifying");
-				trigger.send(block_hash).unwrap();
+		if finalized {
+			for ext in extrinsics.iter() {
+				let ext = ext?;
+				let hash = <C as subxt::Config>::Hasher::hash_of(&ext.bytes());
+				if let Some(trigger) = callbacks.remove(&hash) {
+					trace!(?hash, "found transaction, notifying");
+					trigger.send(block_hash).unwrap();
+				}
 			}
+			info!(block_number, ?block_hash, extrinsics_count, "FINALIZED block");
+		} else {
+			info!(block_number, ?block_hash, extrinsics_count, "     BEST block");
 		}
-
-		info!(block_number, ?block_hash, extrinsics_count, "block");
 		Ok(())
 	}
 
@@ -79,13 +83,18 @@ impl<C: subxt::Config> BlockMonitor<C> {
 		api: OnlineClient<C>,
 		mut listener_requrest_rx: mpsc::Receiver<(HashOf<C>, TxFoundListenerTrigger<HashOf<C>>)>,
 	) -> Result<(), Box<dyn std::error::Error>> {
-		let mut blocks_sub = api.blocks().subscribe_finalized().await?;
+		let mut finalized_blocks_sub = api.blocks().subscribe_finalized().await?;
+		let mut best_blocks_sub = api.blocks().subscribe_best().await?;
 
 		let mut callbacks = HashMap::<HashOf<C>, TxFoundListenerTrigger<HashOf<C>>>::new();
 		loop {
 			select! {
-				Some(Ok(block)) = blocks_sub.next() => {
-					Self::handle_block(&mut callbacks, block).await?;
+				Some(Ok(block)) = finalized_blocks_sub.next() => {
+					Self::handle_block(&mut callbacks, block, true).await?;
+				}
+
+				Some(Ok(block)) = best_blocks_sub.next() => {
+					Self::handle_block(&mut callbacks, block, false).await?;
 				}
 
 				Some(listener_request) = listener_requrest_rx.recv() => {
