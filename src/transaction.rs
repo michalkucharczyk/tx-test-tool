@@ -53,6 +53,21 @@ pub enum TransactionStatus<H> {
 	Error(String),
 }
 
+impl<H> TransactionStatus<H> {
+	pub fn get_letter(&self) -> char {
+		match self {
+			TransactionStatus::Validated => 'V',
+			TransactionStatus::Broadcasted { .. } => 'b',
+			TransactionStatus::InBlock(..) => 'B',
+			TransactionStatus::Finalized(..) => 'F',
+			TransactionStatus::Error { .. } => 'E',
+			TransactionStatus::Invalid { .. } => 'I',
+			TransactionStatus::Dropped { .. } => 'D',
+			TransactionStatus::NoLongerInBestBlock => 'N',
+		}
+	}
+}
+
 impl<H: BlockHash + std::fmt::Debug> TransactionStatus<H> {}
 
 impl<C: subxt::Config> From<TxStatus<C, OnlineClient<C>>> for TransactionStatus<C::Hash> {

@@ -85,10 +85,10 @@ pub struct Counters {
 
 impl Display for Counters {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		let buffered = self.buffered();
+		// let buffered = self.buffered();
 		write!(
 			f,
-			"p {:7} s:{:7} {:7}/{:7} v:{:7} b{:7} f:{:7} d:{:7} buff:{:7}",
+			"p {:7} s:{:7} {:7}/{:7} v:{:7} b{:7} f:{:7} d:{:7} i:{:7}",
 			self.popped.load(Ordering::Relaxed),
 			self.sent.load(Ordering::Relaxed),
 			self.submit_and_watch_success.load(Ordering::Relaxed),
@@ -97,7 +97,7 @@ impl Display for Counters {
 			self.ts_broadcasted.load(Ordering::Relaxed),
 			self.ts_finalized.load(Ordering::Relaxed),
 			self.ts_dropped.load(Ordering::Relaxed),
-			buffered
+			self.ts_invalid.load(Ordering::Relaxed),
 		)
 	}
 }
@@ -166,13 +166,16 @@ pub trait ExecutionLog: Sync + Send {
 	fn time_to_resubmitted(&self) -> Option<Duration>;
 	fn time_to_finalized_monitor(&self) -> Option<Duration>;
 
-	fn get_invalid_reason(&self) -> Option<String>;
-	fn get_error_reason(&self) -> Option<String>;
-	fn get_dropped_reason(&self) -> Option<String>;
+	fn get_invalid_reason(&self) -> Vec<String>;
+	fn get_error_reason(&self) -> Vec<String>;
+	fn get_dropped_reason(&self) -> Vec<String>;
 	fn get_resent_count(&self) -> u32;
 
-	fn get_submit_result_error(&self) -> Option<String>;
-	fn get_submit_and_watch_result_error(&self) -> Option<String>;
+	fn get_submit_result_error(&self) -> Vec<String>;
+	fn get_submit_and_watch_result_error(&self) -> Vec<String>;
+
+	fn get_inpool_events_string(&self) -> String;
+	fn get_sent_time(&self) -> Option<SystemTime>;
 }
 
 #[derive(Debug)]
@@ -364,46 +367,81 @@ impl<H: BlockHash + 'static> ExecutionLog for DefaultExecutionLog<H> {
 		Self::duration_since_timestamp(self.get_sent_time_stamp(), ets)
 	}
 
-	fn get_invalid_reason(&self) -> Option<String> {
-		self.events.read().iter().find_map(|e| match e {
-			ExecutionEvent::TxPoolEvent(_, TransactionStatus::Invalid(reason)) =>
-				Some(reason.clone()),
-			_ => None,
-		})
+	fn get_invalid_reason(&self) -> Vec<String> {
+		self.events
+			.read()
+			.iter()
+			.filter_map(|e| match e {
+				ExecutionEvent::TxPoolEvent(_, TransactionStatus::Invalid(reason)) =>
+					Some(reason.clone()),
+				_ => None,
+			})
+			.collect()
 	}
 
-	fn get_error_reason(&self) -> Option<String> {
-		self.events.read().iter().find_map(|e| match e {
-			ExecutionEvent::TxPoolEvent(_, TransactionStatus::Error(reason)) =>
-				Some(reason.clone()),
-			_ => None,
-		})
+	fn get_error_reason(&self) -> Vec<String> {
+		self.events
+			.read()
+			.iter()
+			.filter_map(|e| match e {
+				ExecutionEvent::TxPoolEvent(_, TransactionStatus::Error(reason)) =>
+					Some(reason.clone()),
+				_ => None,
+			})
+			.collect()
 	}
 
-	fn get_dropped_reason(&self) -> Option<String> {
-		self.events.read().iter().find_map(|e| match e {
-			ExecutionEvent::TxPoolEvent(_, TransactionStatus::Dropped(reason)) =>
-				Some(reason.clone()),
-			_ => None,
-		})
+	fn get_dropped_reason(&self) -> Vec<String> {
+		self.events
+			.read()
+			.iter()
+			.filter_map(|e| match e {
+				ExecutionEvent::TxPoolEvent(_, TransactionStatus::Dropped(reason)) =>
+					Some(reason.clone()),
+				_ => None,
+			})
+			.collect()
 	}
 
 	fn get_resent_count(&self) -> u32 {
 		unimplemented!()
 	}
 
-	fn get_submit_result_error(&self) -> Option<String> {
-		self.events.read().iter().find_map(|e| match e {
-			ExecutionEvent::SubmitResult(_, Err(reason)) => Some(reason.clone()),
-			_ => None,
-		})
+	fn get_submit_result_error(&self) -> Vec<String> {
+		self.events
+			.read()
+			.iter()
+			.filter_map(|e| match e {
+				ExecutionEvent::SubmitResult(_, Err(reason)) => Some(reason.clone()),
+				_ => None,
+			})
+			.collect()
 	}
 
-	fn get_submit_and_watch_result_error(&self) -> Option<String> {
-		self.events.read().iter().find_map(|e| match e {
-			ExecutionEvent::SubmitAndWatchResult(_, Err(reason)) => Some(reason.clone()),
-			_ => None,
-		})
+	fn get_submit_and_watch_result_error(&self) -> Vec<String> {
+		self.events
+			.read()
+			.iter()
+			.filter_map(|e| match e {
+				ExecutionEvent::SubmitAndWatchResult(_, Err(reason)) => Some(reason.clone()),
+				_ => None,
+			})
+			.collect()
+	}
+
+	fn get_inpool_events_string(&self) -> String {
+		self.events
+			.read()
+			.iter()
+			.filter_map(|e| match e {
+				ExecutionEvent::TxPoolEvent(_, p) => Some(p.get_letter()),
+				_ => None,
+			})
+			.collect()
+	}
+
+	fn get_sent_time(&self) -> Option<SystemTime> {
+		return self.get_sent_time_stamp()
 	}
 }
 
@@ -452,11 +490,11 @@ pub fn single_stat<'a, E: ExecutionLog + 'a>(
 pub fn failure_reason_stats<'a, E: ExecutionLog + 'a>(
 	name: String,
 	logs: impl Iterator<Item = &'a Arc<E>>,
-	method: fn(&E) -> Option<String>,
+	method: fn(&E) -> Vec<String>,
 ) {
 	let mut map = HashMap::<String, usize>::new();
 	for l in logs {
-		if let Some(reason) = method(&*l) {
+		for reason in method(&*l) {
 			*map.entry(reason).or_default() += 1;
 		}
 	}
@@ -495,6 +533,22 @@ pub fn make_stats<E: ExecutionLog>(logs: impl IntoIterator<Item = Arc<E>>, show_
 		logs.iter(),
 		E::get_submit_and_watch_result_error,
 	);
+
+	let mut timeline_map = HashMap::<String, usize>::default();
+	let mut logs = logs.into_iter().filter(|e| e.get_sent_time().is_some()).collect::<Vec<_>>();
+	logs.sort_by_key(|e| e.get_sent_time().unwrap());
+	for e in &logs {
+		// info!("{:?}/{:3?} -> {}", e.account_metadata(), e.nonce(), e.get_inpool_events_string());
+		*timeline_map.entry(e.get_inpool_events_string()).or_default() += 1;
+	}
+	timeline_map.iter().for_each(|(l, c)| {
+		info!("{:>30} : {:?}", l, c);
+	});
+	// info!("sorted --------------------");
+	// logs.sort_by_key(|e| e.nonce());
+	// for e in logs {
+	// 	info!("{:?}/{:3?} -> {}", e.account_metadata(), e.nonce(), e.get_inpool_events_string());
+	// }
 }
 
 pub mod journal {
