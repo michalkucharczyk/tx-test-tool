@@ -34,7 +34,7 @@ mod subxt_api_connector;
 mod subxt_transaction;
 mod transaction;
 use clap::Parser;
-use transaction::{ResubmitHandler, Transaction, TransactionsSink};
+use transaction::{ResubmitHandler, Transaction, TransactionRecipe, TransactionsSink};
 
 use crate::{
 	cli::{AccountsDescription, CliCommand},
@@ -100,6 +100,7 @@ trait TransactionBuilder {
 		nonce: &Option<u128>,
 		sink: &Self::Sink,
 		unwatched: bool,
+		recipe: &TransactionRecipe,
 	) -> DefaultTxTask<Self::Transaction>;
 }
 
@@ -116,6 +117,7 @@ impl TransactionBuilder for FakeTransactionBuilder {
 		nonce: &Option<u128>,
 		sink: &Self::Sink,
 		unwatched: bool,
+		recipe: &TransactionRecipe,
 	) -> DefaultTxTask<Self::Transaction> {
 		if unwatched {
 			todo!()
@@ -160,14 +162,15 @@ impl TransactionBuilder for SubstrateTransactionBuilder {
 		nonce: &Option<u128>,
 		sink: &Self::Sink,
 		unwatched: bool,
+		recipe: &TransactionRecipe,
 	) -> DefaultTxTask<Self::Transaction> {
 		if unwatched {
 			DefaultTxTask::<Self::Transaction>::new_unwatched(
-				build_subxt_tx(account, nonce, sink, build_substrate_tx_payload).await,
+				build_subxt_tx(account, nonce, sink, recipe, build_substrate_tx_payload).await,
 			)
 		} else {
 			DefaultTxTask::<Self::Transaction>::new_watched(
-				build_subxt_tx(account, nonce, sink, build_substrate_tx_payload).await,
+				build_subxt_tx(account, nonce, sink, recipe, build_substrate_tx_payload).await,
 			)
 		}
 	}
@@ -192,14 +195,15 @@ impl TransactionBuilder for EthTransactionBuilder {
 		nonce: &Option<u128>,
 		sink: &Self::Sink,
 		unwatched: bool,
+		recipe: &TransactionRecipe,
 	) -> DefaultTxTask<Self::Transaction> {
 		if unwatched {
 			DefaultTxTask::<Self::Transaction>::new_unwatched(
-				build_subxt_tx(account, nonce, sink, build_eth_tx_payload).await,
+				build_subxt_tx(account, nonce, sink, recipe, build_eth_tx_payload).await,
 			)
 		} else {
 			DefaultTxTask::<Self::Transaction>::new_watched(
-				build_subxt_tx(account, nonce, sink, build_eth_tx_payload).await,
+				build_subxt_tx(account, nonce, sink, recipe, build_eth_tx_payload).await,
 			)
 		}
 	}
@@ -222,6 +226,7 @@ async fn build_transactions<H, T, S, B>(
 	sink: S,
 	unwatched: bool,
 	defs: Vec<TransactionBuildParams>,
+	recipe: &TransactionRecipe,
 ) -> Vec<DefaultTxTask<T>>
 where
 	H: BlockHash + 'static,
@@ -243,11 +248,16 @@ where
 		let defs = defs.clone();
 		let builder = builder.clone();
 		let sink = sink.clone();
+		let recipe = recipe.clone();
 		threads.push(tokio::task::spawn(async move {
 			let mut txs = vec![];
 			for i in chunk {
 				let d = defs[i].clone();
-				txs.push(builder.build_transaction(&d.account, &d.nonce, &sink, unwatched).await);
+				txs.push(
+					builder
+						.build_transaction(&d.account, &d.nonce, &sink, unwatched, &recipe)
+						.await,
+				);
 			}
 			txs
 		}));
@@ -269,6 +279,7 @@ async fn execute_scenario<H, T, S, B>(
 	scenario: &SendingScenario,
 	unwatched: bool,
 	send_threshold: usize,
+	recipe: &TransactionRecipe,
 ) where
 	H: BlockHash + 'static,
 	T: Transaction<HashType = H> + ResubmitHandler + Send + 'static,
@@ -277,7 +288,7 @@ async fn execute_scenario<H, T, S, B>(
 {
 	let transactions = match scenario {
 		SendingScenario::OneShot { account, nonce } =>
-			vec![builder.build_transaction(account, nonce, &sink, unwatched).await],
+			vec![builder.build_transaction(account, nonce, &sink, unwatched, recipe).await],
 		SendingScenario::FromSingleAccount { account, from, count } => {
 			let mut transactions_defs = vec![];
 			let mut nonce = *from;
@@ -287,7 +298,8 @@ async fn execute_scenario<H, T, S, B>(
 				nonce = nonce.map(|n| n + 1);
 			}
 			let transactions =
-				build_transactions(builder, sink.clone(), unwatched, transactions_defs).await;
+				build_transactions(builder, sink.clone(), unwatched, transactions_defs, recipe)
+					.await;
 
 			transactions
 		},
@@ -303,7 +315,8 @@ async fn execute_scenario<H, T, S, B>(
 				}
 			}
 			let transactions =
-				build_transactions(builder, sink.clone(), unwatched, transactions_defs).await;
+				build_transactions(builder, sink.clone(), unwatched, transactions_defs, recipe)
+					.await;
 			transactions
 		},
 	};
@@ -339,13 +352,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 			log_file,
 			scenario,
 			send_threshold,
+			remark,
 		} => {
+			let recipe = remark.map_or_else(
+				|| TransactionRecipe::transfer(),
+				|size| TransactionRecipe::remark(size),
+			);
 			match chain {
 				ChainType::Fake => {
 					let sink = FakeTransactionSink::new();
 					let builder = FakeTransactionBuilder::new();
-					execute_scenario(sink, builder, scenario, *unwatched, *send_threshold as usize)
-						.await;
+					execute_scenario(
+						sink,
+						builder,
+						scenario,
+						*unwatched,
+						*send_threshold as usize,
+						&recipe,
+					)
+					.await;
 				},
 				ChainType::Eth => {
 					let transaction_monitor =
@@ -360,8 +385,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					)
 					.await;
 					let builder = EthTransactionBuilder::new();
-					execute_scenario(sink, builder, scenario, *unwatched, *send_threshold as usize)
-						.await;
+					execute_scenario(
+						sink,
+						builder,
+						scenario,
+						*unwatched,
+						*send_threshold as usize,
+						&recipe,
+					)
+					.await;
 				},
 				ChainType::Sub => {
 					let transaction_monitor =
@@ -375,8 +407,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					)
 					.await;
 					let builder = SubstrateTransactionBuilder::new();
-					execute_scenario(sink, builder, scenario, *unwatched, *send_threshold as usize)
-						.await;
+					execute_scenario(
+						sink,
+						builder,
+						scenario,
+						*unwatched,
+						*send_threshold as usize,
+						&recipe,
+					)
+					.await;
 				},
 			};
 		},

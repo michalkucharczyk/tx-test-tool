@@ -33,6 +33,10 @@ pub enum CliCommand {
 		/// Override log file name (out_yyyymmdd_hhmmss.json)
 		#[clap(long)]
 		log_file: Option<String>,
+		/// Use remark command with given size in kbytes. If not given transfer transaction will be
+		/// sent.
+		#[clap(long)]
+		remark: Option<u32>,
 		#[clap(subcommand)]
 		scenario: SendingScenario,
 	},

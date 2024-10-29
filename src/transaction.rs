@@ -14,6 +14,27 @@ pub enum AccountMetadata {
 	KeyRing(String),
 }
 
+#[derive(Clone)]
+pub enum TransactionCall {
+	Transfer,
+	Remark(u32),
+}
+
+#[derive(Clone)]
+pub struct TransactionRecipe {
+	pub call: TransactionCall,
+}
+
+impl TransactionRecipe {
+	pub fn transfer() -> Self {
+		Self { call: TransactionCall::Transfer }
+	}
+
+	pub fn remark(size: u32) -> Self {
+		Self { call: TransactionCall::Remark(size) }
+	}
+}
+
 pub trait TransactionStatusIsTerminal {
 	fn is_terminal(&self) -> bool;
 	fn is_finalized(&self) -> bool;

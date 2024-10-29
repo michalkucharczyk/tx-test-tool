@@ -344,6 +344,7 @@ pub fn generate_ecdsa_keypair(description: AccountGenerateRequest) -> EthKeypair
 		},
 	}
 }
+
 pub fn generate_sr25519_keypair(description: AccountGenerateRequest) -> SrPair {
 	match description {
 		AccountGenerateRequest::Keyring(name) => match name.as_str() {
@@ -436,23 +437,36 @@ where
 }
 
 pub trait GenerateTxPayloadFunction<A: Send + Sync + AsRef<[u8]>>:
-	Fn(A) -> DynamicPayload + Copy + Send + 'static
+	Fn(A, &TransactionRecipe) -> DynamicPayload + Copy + Send + 'static
 {
 }
 
 impl<T, A: Send + Sync + AsRef<[u8]>> GenerateTxPayloadFunction<A> for T where
-	T: Fn(A) -> DynamicPayload + Copy + Send + 'static
+	T: Fn(A, &TransactionRecipe) -> DynamicPayload + Copy + Send + 'static
 {
 }
 
-pub fn build_substrate_tx_payload(to_account_id: AccountIdOf<PolkadotConfig>) -> DynamicPayload {
+pub fn build_substrate_tx_payload(
+	to_account_id: AccountIdOf<PolkadotConfig>,
+	recipe: &TransactionRecipe,
+) -> DynamicPayload {
 	trace!(target:LOG_TARGET,to_account=hex::encode(to_account_id.clone()),"build_payload (sub)" );
-	//works for rococo:
-	subxt::dynamic::tx(
-		"Balances",
-		"transfer_keep_alive",
-		vec![value!(Id(Value::from_bytes(to_account_id))), Value::u128(1u32.into())],
-	)
+
+	match recipe.call {
+		TransactionCall::Remark(s) => {
+			let i = hex::encode(to_account_id.clone()).as_bytes().last().copied().unwrap();
+			let data = vec![i; s as usize * 1024];
+			subxt::dynamic::tx("System", "remark", vec![data])
+		},
+		TransactionCall::Transfer => {
+			//works for rococo:
+			subxt::dynamic::tx(
+				"Balances",
+				"transfer_keep_alive",
+				vec![value!(Id(Value::from_bytes(to_account_id))), Value::u128(1u32.into())],
+			)
+		},
+	}
 
 	//works for rococo / asset-hub:
 	// subxt::dynamic::tx(
@@ -485,22 +499,33 @@ pub fn build_substrate_tx_payload(to_account_id: AccountIdOf<PolkadotConfig>) ->
 	// ],
 }
 
-pub fn build_eth_tx_payload(to_account_id: AccountId20) -> DynamicPayload {
+pub fn build_eth_tx_payload(
+	to_account_id: AccountId20,
+	recipe: &TransactionRecipe,
+) -> DynamicPayload {
 	trace!(target:LOG_TARGET,to_account=hex::encode(to_account_id.clone()),"build_payload (eth)");
-	subxt::dynamic::tx(
-		"Balances",
-		"transfer_keep_alive",
-		vec![
-			Value::unnamed_composite(vec![Value::from_bytes(to_account_id)]),
-			Value::u128(1u32.into()),
-		],
-	)
+	match recipe.call {
+		TransactionCall::Remark(s) => {
+			let i = hex::encode(to_account_id.clone()).as_bytes().last().copied().unwrap();
+			let data = vec![i; s as usize];
+			subxt::dynamic::tx("System", "remark", vec![data])
+		},
+		TransactionCall::Transfer => subxt::dynamic::tx(
+			"Balances",
+			"transfer_keep_alive",
+			vec![
+				Value::unnamed_composite(vec![Value::from_bytes(to_account_id)]),
+				Value::u128(1u32.into()),
+			],
+		),
+	}
 }
 
 pub async fn build_subxt_tx<C, KP, G>(
 	account: &String,
 	nonce: &Option<u128>,
 	sink: &SubxtTransactionsSink<C, KP>,
+	recipe: &TransactionRecipe,
 	generate_payload: G,
 ) -> SubxtTransaction<C>
 where
@@ -543,7 +568,7 @@ where
 	);
 
 	let tx_params = <SubstrateExtrinsicParamsBuilder<C>>::new().nonce(nonce as u64).build().into();
-	let tx_call = generate_payload(to_account_id);
+	let tx_call = generate_payload(to_account_id, recipe);
 
 	let tx = SubxtTransaction::<C>::new(
 		sink.api()
