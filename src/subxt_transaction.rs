@@ -3,8 +3,8 @@ use crate::{
 	cli::AccountsDescription,
 	error::Error,
 	transaction::{
-		AccountMetadata, ResubmitHandler, Transaction, TransactionMonitor, TransactionStatus,
-		TransactionsSink,
+		AccountMetadata, ResubmitHandler, Transaction, TransactionCall, TransactionMonitor,
+		TransactionRecipe, TransactionStatus, TransactionsSink,
 	},
 };
 use async_trait::async_trait;
@@ -125,7 +125,7 @@ where
 {
 	pub async fn new() -> Self {
 		Self {
-			api: OnlineClient::<C>::from_insecure_url("ws://127.0.0.1:9933")
+			api: crate::subxt_api_connector::connect("ws://127.0.0.1:9933")
 				.await
 				.expect(EXPECT_CONNECT),
 			from_accounts: Default::default(),
@@ -139,7 +139,7 @@ where
 
 	pub async fn new_with_uri(uri: &String) -> Self {
 		Self {
-			api: OnlineClient::<C>::from_insecure_url(uri).await.expect(EXPECT_CONNECT),
+			api: crate::subxt_api_connector::connect(uri).await.expect(EXPECT_CONNECT),
 			from_accounts: Default::default(),
 			to_accounts: Default::default(),
 			nonces: Default::default(),
@@ -166,7 +166,10 @@ where
 			from_accounts: Arc::from(RwLock::from(from_accounts)),
 			to_accounts: Arc::from(RwLock::from(to_accounts)),
 			nonces: Default::default(),
-			rpc_client: RpcClient::from_url(uri).await.expect(EXPECT_CONNECT),
+			rpc_client: crate::subxt_api_connector::my_jsonrpsee_helpers::client(uri)
+				.await
+				.expect(EXPECT_CONNECT)
+				.into(),
 			current_pending_extrinsics: Arc::new(None.into()),
 			transaction_monitor,
 		}
