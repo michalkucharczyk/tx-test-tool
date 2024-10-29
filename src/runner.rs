@@ -40,7 +40,7 @@ impl<T: TxTask> std::fmt::Debug for ExecutionResult<T> {
 }
 
 #[async_trait]
-pub trait TxTask: Send + Sync + Sized {
+pub trait TxTask: Send + Sync + Sized + std::fmt::Debug {
 	type Transaction: Transaction + ResubmitHandler;
 
 	fn tx(&self) -> &Self::Transaction;
@@ -78,6 +78,15 @@ where
 	watched: bool,
 }
 
+impl<T> std::fmt::Debug for DefaultTxTask<T>
+where
+	T: Transaction,
+{
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("tx").field("nonce", &self.tx.nonce()).finish()
+	}
+}
+
 #[async_trait]
 impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 	for DefaultTxTask<T>
@@ -111,7 +120,7 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 			Ok(mut stream) => {
 				log.push_event(ExecutionEvent::submit_and_watch_result(Ok(())));
 				while let Some(status) = stream.next().await {
-					debug!(target:LOG_TARGET,hash=?self.tx().hash(),"status: {status:?}");
+					debug!(target:LOG_TARGET,tx=?self,"status: {status:?}");
 					log.push_event(status.clone().into());
 					if status.is_finalized() {
 						return ExecutionResult::Done(self.tx().hash());
@@ -135,7 +144,7 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 					info!(nonce=?self.tx().nonce(),"submit_and_watch: error: {e:?}");
 					ExecutionResult::Error(self.tx().hash())
 				};
-				info!(?hash, nonce, "error: {e:?} {result:?}");
+				// debug!(?hash, nonce, "error: {e:?} {result:?}");
 				if !matches!(result, ExecutionResult::NeedsResubmit(ResubmitReason::Dropped, _)) {
 					info!(?hash, nonce, "error: {e:?} {result:?}");
 				}
@@ -250,8 +259,14 @@ where
 
 	fn pop(&mut self) -> Option<T> {
 		trace!(target:LOG_TARGET, "before pop");
-		let r = self.resubmission_queue.pop().or_else(|| self.transactions.pop());
-		trace!(target:LOG_TARGET, "after pop");
+		let r = self.resubmission_queue.pop().or_else(|| {
+			if self.resubmission_queue.is_empty() {
+				self.transactions.pop()
+			} else {
+				None
+			}
+		});
+		trace!(target:LOG_TARGET, "after pop {}", r.is_some());
 		r
 	}
 
@@ -277,10 +292,10 @@ where
 				nonces.push(task.tx().nonce());
 				let log = self.logs[&task.tx().hash()].clone();
 				log.push_event(ExecutionEvent::popped());
-				trace!(target:LOG_TARGET,hash = ?hash, workers_len=workers.len(), "before push");
+				trace!(target:LOG_TARGET,task = ?&task, workers_len=workers.len(), "before push");
 				workers.push(task.execute(log, self.rpc.clone()));
 				pushed = pushed + 1;
-				trace!(target:LOG_TARGET,hash = ?hash, workers_len=workers.len(), "after push");
+				trace!(target:LOG_TARGET,workers_len=workers.len(), "after push");
 			} else {
 				break;
 			};
@@ -362,7 +377,7 @@ where
 						None => {
 							debug!(target:LOG_TARGET,"all futures done");
 							tokio::time::sleep(Duration::from_millis(100)).await;
-							if self.resubmission_queue.is_empty().await {
+							if self.resubmission_queue.is_empty() {
 								self.resubmission_queue.terminate();
 								debug!(target:LOG_TARGET,"done");
 								break;

@@ -68,7 +68,7 @@ pub trait ResubmissionQueue<T: TxTask> {
 	fn pop(&self) -> Option<T>;
 	fn forced_terminate(&self);
 	fn terminate(&self);
-	async fn is_empty(&self) -> bool;
+	fn is_empty(&self) -> bool;
 }
 
 pub type ResubmittedTxTask<T> = Pin<Box<dyn futures::Future<Output = Option<T>> + Sync + Send>>;
@@ -201,7 +201,7 @@ impl<T: TxTask> DefaultResubmissionQueue<T> {
 		let mut min_nonce = queue[0].tx().nonce();
 
 		for (i, item) in queue.iter().enumerate().skip(1) {
-			let nonce = queue[0].tx().nonce();
+			let nonce = queue[i].tx().nonce();
 			if nonce < min_nonce {
 				min_index = i;
 				min_nonce = nonce;
@@ -224,7 +224,7 @@ impl<T: TxTask + 'static> ResubmissionQueue<T> for DefaultResubmissionQueue<T> {
 		self.terminate.store(true, Ordering::Relaxed);
 	}
 
-	async fn is_empty(&self) -> bool {
+	fn is_empty(&self) -> bool {
 		{
 			trace!(
 				target:LOG_TARGET,
@@ -251,11 +251,17 @@ impl<T: TxTask + 'static> ResubmissionQueue<T> for DefaultResubmissionQueue<T> {
 	//this maybe shall return an error if tx cannot be resubmitted?
 	//and runner shall log the this event.
 	fn pop(&self) -> Option<T> {
-		trace!(target: LOG_TARGET, "B POP");
-		// let r = self.ready_queue.write().pop();
-		let r = self.get_lowest_nonce();
-		trace!(target: LOG_TARGET, "A POP {}", r.is_some());
-		r
+		if self.is_queue_empty.load(Ordering::Relaxed) &&
+			self.resubmission_request_tx.capacity() == CHANNEL_CAPACITY
+		{
+			trace!(target: LOG_TARGET, "B POP");
+			// let r = self.ready_queue.write().pop();
+			let r = self.get_lowest_nonce();
+			trace!(target: LOG_TARGET, "A POP {}", r.is_some());
+			r
+		} else {
+			None
+		}
 	}
 }
 
