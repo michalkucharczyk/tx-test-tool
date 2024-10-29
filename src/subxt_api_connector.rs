@@ -2,7 +2,7 @@ use std::{error::Error, sync::Arc, time::Duration};
 use subxt::{backend::legacy::LegacyBackend, OnlineClient};
 use tracing::info;
 
-mod my_jsonrpsee_helpers {
+pub mod my_jsonrpsee_helpers {
 	pub use jsonrpsee::{
 		client_transport::ws::{self, EitherStream, Url, WsTransportClientBuilder},
 		core::client::{Client, Error},
@@ -24,6 +24,8 @@ mod my_jsonrpsee_helpers {
 	async fn ws_transport(url: &str) -> Result<(Sender, Receiver), Error> {
 		let url = Url::parse(url).map_err(|e| Error::Transport(e.into()))?;
 		WsTransportClientBuilder::default()
+			.max_request_size(400 * 1024 * 1024)
+			.max_response_size(400 * 1024 * 1024)
 			.build(url)
 			.await
 			.map_err(|e| Error::Transport(e.into()))
