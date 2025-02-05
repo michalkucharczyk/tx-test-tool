@@ -150,7 +150,7 @@ where
 	}
 
 	pub async fn new_with_uri_with_accounts_description<G>(
-		uri: &String,
+		uri: &str,
 		accounts_description: AccountsDescription,
 		generate_pair: G,
 		transaction_monitor: Option<BlockMonitor<C>>,
@@ -159,8 +159,8 @@ where
 		G: GenerateKeyPairFunction<KP>,
 	{
 		let from_accounts =
-			derive_accounts(accounts_description.clone(), &SENDER_SEED, generate_pair);
-		let to_accounts = derive_accounts(accounts_description, &RECEIVER_SEED, generate_pair);
+			derive_accounts(accounts_description.clone(), SENDER_SEED, generate_pair);
+		let to_accounts = derive_accounts(accounts_description, RECEIVER_SEED, generate_pair);
 		Self {
 			api: crate::subxt_api_connector::connect(uri).await.expect(EXPECT_CONNECT),
 			from_accounts: Arc::from(RwLock::from(from_accounts)),
@@ -179,19 +179,19 @@ where
 		self.api.clone()
 	}
 
-	pub fn get_from_account_id(&self, account: &String) -> Option<AccountIdOf<C>> {
+	pub fn get_from_account_id(&self, account: &str) -> Option<AccountIdOf<C>> {
 		self.from_accounts.read().get(account).map(|a| a.0.account_id())
 	}
 
-	fn get_to_account_id(&self, account: &String) -> Option<AccountIdOf<C>> {
+	fn get_to_account_id(&self, account: &str) -> Option<AccountIdOf<C>> {
 		self.to_accounts.read().get(account).map(|a| a.0.account_id())
 	}
 
-	fn get_to_account_metadata(&self, account: &String) -> Option<AccountMetadata> {
+	fn get_to_account_metadata(&self, account: &str) -> Option<AccountMetadata> {
 		self.to_accounts.read().get(account).map(|a| a.1.clone())
 	}
 
-	fn get_from_key_pair(&self, account: &String) -> Option<KP> {
+	fn get_from_key_pair(&self, account: &str) -> Option<KP> {
 		self.from_accounts.read().get(account).map(|k| k.0.clone())
 	}
 
@@ -212,8 +212,8 @@ where
 
 		let mut nonces = self.nonces.write();
 		if let Some(nonce) = nonces.get_mut(&hex::encode(account.clone())) {
-			*nonce = *nonce + 1;
-			return Ok(*nonce)
+			*nonce += 1;
+			Ok(*nonce)
 		} else {
 			nonces.insert(hex::encode(account), remote_nonce);
 			Ok(remote_nonce)
@@ -360,7 +360,7 @@ pub fn generate_sr25519_keypair(description: AccountGenerateRequest) -> SrPair {
 			use std::str::FromStr;
 			let derivation = format!("{SEED}{seed}/{i}");
 			let u = subxt_signer::SecretUri::from_str(&derivation).unwrap();
-			<subxt_signer::sr25519::Keypair>::from_uri(&u).unwrap().into()
+			<subxt_signer::sr25519::Keypair>::from_uri(&u).unwrap()
 		},
 	}
 }
@@ -395,7 +395,7 @@ where
 			);
 			let mut threads = Vec::new();
 
-			(0..t).into_iter().for_each(|thread_idx| {
+			(0..t).for_each(|thread_idx| {
 				// let chunk = (thread_idx * (n / t))..((thread_idx + 1) * (n / t));
 				let chunk =
 					(from_id + (thread_idx * n) / t)..(from_id + ((thread_idx + 1) * n) / t);
@@ -421,8 +421,7 @@ where
 
 			threads
 				.into_iter()
-				.map(|h| h.join().unwrap())
-				.flatten()
+				.flat_map(|h| h.join().unwrap())
 				// .map(|p| (p, funds))
 				.collect()
 		},
@@ -503,10 +502,10 @@ pub fn build_eth_tx_payload(
 	to_account_id: AccountId20,
 	recipe: &TransactionRecipe,
 ) -> DynamicPayload {
-	trace!(target:LOG_TARGET,to_account=hex::encode(to_account_id.clone()),"build_payload (eth)");
+	trace!(target:LOG_TARGET,to_account=hex::encode(to_account_id),"build_payload (eth)");
 	match recipe.call {
 		TransactionCall::Remark(s) => {
-			let i = hex::encode(to_account_id.clone()).as_bytes().last().copied().unwrap();
+			let i = hex::encode(to_account_id).as_bytes().last().copied().unwrap();
 			let data = vec![i; s as usize];
 			subxt::dynamic::tx("System", "remark", vec![data])
 		},
@@ -521,8 +520,8 @@ pub fn build_eth_tx_payload(
 	}
 }
 
-pub async fn build_subxt_tx<C, KP, G>(
-	account: &String,
+pub async fn build_subxt_tx<'a, C, KP, G>(
+	account: &'a str,
 	nonce: &Option<u128>,
 	sink: &SubxtTransactionsSink<C, KP>,
 	recipe: &TransactionRecipe,

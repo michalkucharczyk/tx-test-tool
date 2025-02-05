@@ -441,7 +441,7 @@ impl<H: BlockHash + 'static> ExecutionLog for DefaultExecutionLog<H> {
 	}
 
 	fn get_sent_time(&self) -> Option<SystemTime> {
-		return self.get_sent_time_stamp()
+		self.get_sent_time_stamp()
 	}
 }
 
@@ -453,7 +453,7 @@ pub fn single_stat<'a, E: ExecutionLog + 'a>(
 ) {
 	let mut v: Vec<f64> = vec![];
 	for l in logs {
-		let time_to_event = method(&*l);
+		let time_to_event = method(&**l);
 		if let Some(time_to_event) = time_to_event {
 			v.push(time_to_event.as_secs_f64());
 		}
@@ -494,7 +494,7 @@ pub fn failure_reason_stats<'a, E: ExecutionLog + 'a>(
 ) {
 	let mut map = HashMap::<String, usize>::new();
 	for l in logs {
-		for reason in method(&*l) {
+		for reason in method(&**l) {
 			*map.entry(reason).or_default() += 1;
 		}
 	}
@@ -506,7 +506,7 @@ pub fn failure_reason_stats<'a, E: ExecutionLog + 'a>(
 
 pub fn make_stats<E: ExecutionLog>(logs: impl IntoIterator<Item = Arc<E>>, show_graphs: bool) {
 	let logs = logs.into_iter().collect::<Vec<_>>();
-	info!(target: STAT_TARGET, total_recorded_count = logs.iter().count());
+	info!(target: STAT_TARGET, total_recorded_count = logs.len());
 	single_stat("Time to dropped".into(), logs.iter(), E::time_to_dropped, show_graphs);
 	single_stat("Time to error".into(), logs.iter(), E::time_to_error, show_graphs);
 	single_stat("Time to invalid".into(), logs.iter(), E::time_to_invalid, show_graphs);

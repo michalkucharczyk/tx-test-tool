@@ -47,19 +47,19 @@ pub trait TxTask: Send + Sync + Sized + std::fmt::Debug {
 	fn is_watched(&self) -> bool;
 
 	async fn send_watched_tx(
-		self: Self,
+		self,
 		log: Arc<dyn ExecutionLog<HashType = TxTashHash<Self>>>,
 		rpc: Arc<dyn TransactionsSink<TxTashHash<Self>>>,
 	) -> ExecutionResult<Self>;
 
 	async fn send_tx(
-		self: Self,
+		self,
 		log: Arc<dyn ExecutionLog<HashType = TxTashHash<Self>>>,
 		rpc: Arc<dyn TransactionsSink<TxTashHash<Self>>>,
 	) -> ExecutionResult<Self>;
 
 	async fn execute(
-		self: Self,
+		self,
 		log: Arc<dyn ExecutionLog<HashType = TxTashHash<Self>>>,
 		rpc: Arc<dyn TransactionsSink<TxTashHash<Self>>>,
 	) -> ExecutionResult<Self>;
@@ -111,7 +111,7 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 	}
 
 	async fn send_watched_tx(
-		self: Self,
+		self,
 		log: Arc<dyn ExecutionLog<HashType = TxTashHash<Self>>>,
 		rpc: Arc<dyn TransactionsSink<TxTashHash<Self>>>,
 	) -> ExecutionResult<Self> {
@@ -155,7 +155,7 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 	}
 
 	async fn send_tx(
-		self: Self,
+		self,
 		log: Arc<dyn ExecutionLog<HashType = TxTashHash<Self>>>,
 		rpc: Arc<dyn TransactionsSink<TxTashHash<Self>>>,
 	) -> ExecutionResult<Self> {
@@ -183,7 +183,7 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 	}
 
 	async fn execute(
-		self: Self,
+		self,
 		log: Arc<dyn ExecutionLog<HashType = TxTashHash<Self>>>,
 		rpc: Arc<dyn TransactionsSink<TxTashHash<Self>>>,
 	) -> ExecutionResult<Self> {
@@ -245,7 +245,7 @@ where
 			Self {
 				initial_tasks,
 				logs,
-				transactions: transactions.into(),
+				transactions,
 				rpc: rpc.into(),
 				resubmission_queue,
 				done: Default::default(),
@@ -294,7 +294,7 @@ where
 				log.push_event(ExecutionEvent::popped());
 				trace!(target:LOG_TARGET,task = ?&task, workers_len=workers.len(), "before push");
 				workers.push(task.execute(log, self.rpc.clone()));
-				pushed = pushed + 1;
+				pushed += 1;
 				trace!(target:LOG_TARGET,workers_len=workers.len(), "after push");
 			} else {
 				break;
@@ -335,7 +335,7 @@ where
 				let log = self.logs[&t.tx().hash()].clone();
 				log.push_event(ExecutionEvent::popped());
 				workers.push(t.execute(log, self.rpc.clone()));
-				i = i + 1;
+				i += 1;
 			} else {
 				break;
 			}
@@ -453,7 +453,6 @@ mod tests {
 		let alith = dev::alith();
 		let baltathar = dev::baltathar();
 
-		let nonce = nonce;
 		let tx_params = Params::new().nonce(nonce).build();
 
 		// let tx_call = subxt::dynamic::tx("System", "remark",
@@ -494,7 +493,7 @@ mod tests {
 		let rpc = EthTransactionsSink::new().await;
 
 		let transactions = (0..3000)
-			.map(|i| EthTestTxTask::new_watched(make_eth_test_transaction(&api, i + 0)))
+			.map(|i| EthTestTxTask::new_watched(make_eth_test_transaction(&api, i)))
 			.rev()
 			// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
 			.collect::<Vec<_>>();

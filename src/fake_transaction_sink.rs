@@ -23,7 +23,7 @@ pub struct FakeTransactionSink {
 
 impl FakeTransactionSink {
 	pub fn new() -> Self {
-		return Self { txs: Default::default(), nonces: Default::default() };
+		Self { txs: Default::default(), nonces: Default::default() }
 	}
 }
 

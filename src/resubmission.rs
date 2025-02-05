@@ -58,7 +58,7 @@ impl NeedsResubmit for Error {
 				}
 			}
 		}
-		return None;
+		None
 	}
 }
 

@@ -94,9 +94,9 @@ trait TransactionBuilder {
 	type Transaction: Transaction<HashType = Self::HashType>;
 	type Sink: TransactionsSink<Self::HashType>;
 
-	async fn build_transaction(
+	async fn build_transaction<'a>(
 		&self,
-		account: &String,
+		account: &'a str,
 		nonce: &Option<u128>,
 		sink: &Self::Sink,
 		unwatched: bool,
@@ -111,9 +111,9 @@ impl TransactionBuilder for FakeTransactionBuilder {
 	type HashType = FakeHash;
 	type Transaction = FakeTransaction;
 	type Sink = FakeTransactionSink;
-	async fn build_transaction(
+	async fn build_transaction<'a>(
 		&self,
-		account: &String,
+		account: &'a str,
 		nonce: &Option<u128>,
 		sink: &Self::Sink,
 		unwatched: bool,
@@ -123,11 +123,11 @@ impl TransactionBuilder for FakeTransactionBuilder {
 			todo!()
 		};
 		let mut nonces = sink.nonces.write();
-		let nonce = if let Some(nonce) = nonces.get_mut(&hex::encode(account.clone())) {
-			*nonce = *nonce + 1;
+		let nonce = if let Some(nonce) = nonces.get_mut(&hex::encode(account)) {
+			*nonce += 1;
 			*nonce
 		} else {
-			nonces.insert(hex::encode(account.clone()), 0);
+			nonces.insert(hex::encode(account), 0);
 			0
 		};
 		let i = account.parse::<u32>().expect("Account shall be valid integer");
@@ -156,9 +156,9 @@ impl TransactionBuilder for SubstrateTransactionBuilder {
 	type HashType = HashOf<PolkadotConfig>;
 	type Transaction = SubstrateTransaction;
 	type Sink = SubstrateTransactionsSink;
-	async fn build_transaction(
+	async fn build_transaction<'a>(
 		&self,
-		account: &String,
+		account: &'a str,
 		nonce: &Option<u128>,
 		sink: &Self::Sink,
 		unwatched: bool,
@@ -189,9 +189,9 @@ impl TransactionBuilder for EthTransactionBuilder {
 	type HashType = HashOf<EthRuntimeConfig>;
 	type Transaction = EthTransaction;
 	type Sink = EthTransactionsSink;
-	async fn build_transaction(
+	async fn build_transaction<'a>(
 		&self,
-		account: &String,
+		account: &'a str,
 		nonce: &Option<u128>,
 		sink: &Self::Sink,
 		unwatched: bool,
@@ -243,7 +243,7 @@ where
 	let builder = Arc::new(builder);
 	let mut threads = Vec::new();
 
-	(0..t).into_iter().for_each(|thread_idx| {
+	(0..t).for_each(|thread_idx| {
 		let chunk = ((thread_idx * n) / t)..(((thread_idx + 1) * n) / t);
 		let defs = defs.clone();
 		let builder = builder.clone();
@@ -297,11 +297,7 @@ async fn execute_scenario<H, T, S, B>(
 				transactions_defs.push(TransactionBuildParams { account: account.clone(), nonce });
 				nonce = nonce.map(|n| n + 1);
 			}
-			let transactions =
-				build_transactions(builder, sink.clone(), unwatched, transactions_defs, recipe)
-					.await;
-
-			transactions
+			build_transactions(builder, sink.clone(), unwatched, transactions_defs, recipe).await
 		},
 		SendingScenario::FromManyAccounts { start_id, last_id, from, count } => {
 			let mut transactions_defs = vec![];
@@ -314,10 +310,8 @@ async fn execute_scenario<H, T, S, B>(
 					nonce = nonce.map(|n| n + 1);
 				}
 			}
-			let transactions =
-				build_transactions(builder, sink.clone(), unwatched, transactions_defs, recipe)
-					.await;
-			transactions
+
+			build_transactions(builder, sink.clone(), unwatched, transactions_defs, recipe).await
 		},
 	};
 
@@ -354,10 +348,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 			send_threshold,
 			remark,
 		} => {
-			let recipe = remark.map_or_else(
-				|| TransactionRecipe::transfer(),
-				|size| TransactionRecipe::remark(size),
-			);
+			let recipe = remark.map_or_else(TransactionRecipe::transfer, TransactionRecipe::remark);
 			match chain {
 				ChainType::Fake => {
 					let sink = FakeTransactionSink::new();
@@ -522,7 +513,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				ChainType::Sub => {
 					let accounts = subxt_transaction::derive_accounts::<PolkadotConfig, _, _>(
 						accounts_description.clone(),
-						&subxt_transaction::SENDER_SEED,
+						subxt_transaction::SENDER_SEED,
 						generate_sr25519_keypair,
 					);
 					accounts
@@ -540,14 +531,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				ChainType::Eth => {
 					let accounts = subxt_transaction::derive_accounts::<EthRuntimeConfig, _, _>(
 						accounts_description.clone(),
-						&subxt_transaction::SENDER_SEED,
+						subxt_transaction::SENDER_SEED,
 						generate_ecdsa_keypair,
 					);
 					accounts
 						.values()
 						.map(|keypair| {
 							serde_json::json!((
-								"0x".to_string() + &hex::encode(&keypair.0.clone().account_id()),
+								"0x".to_string() + &hex::encode(keypair.0.clone().account_id()),
 								balance,
 							))
 						})
