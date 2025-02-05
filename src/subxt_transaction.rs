@@ -322,7 +322,6 @@ pub enum AccountGenerateRequest {
 
 pub const SENDER_SEED: &str = "//Sender";
 pub const RECEIVER_SEED: &str = "//Receiver";
-pub const SEED: &str = "bottom drive obey lake curtain smoke basket hold race lonely fit walk";
 
 pub fn generate_ecdsa_keypair(description: AccountGenerateRequest) -> EthKeypair {
 	match description {
@@ -337,7 +336,7 @@ pub fn generate_ecdsa_keypair(description: AccountGenerateRequest) -> EthKeypair
 		},
 		AccountGenerateRequest::Derived(seed, i) => {
 			use std::str::FromStr;
-			let derivation = format!("{SEED}{seed}//{i}");
+			let derivation = format!("{seed}//{i}");
 			let u = subxt_signer::SecretUri::from_str(&derivation).unwrap();
 			<subxt_signer::ecdsa::Keypair>::from_uri(&u).unwrap().into()
 		},
@@ -357,7 +356,7 @@ pub fn generate_sr25519_keypair(description: AccountGenerateRequest) -> SrPair {
 		},
 		AccountGenerateRequest::Derived(seed, i) => {
 			use std::str::FromStr;
-			let derivation = format!("{SEED}{seed}/{i}");
+			let derivation = format!("{seed}//{i}");
 			let u = subxt_signer::SecretUri::from_str(&derivation).unwrap();
 			<subxt_signer::sr25519::Keypair>::from_uri(&u).unwrap()
 		},
