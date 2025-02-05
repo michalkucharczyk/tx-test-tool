@@ -323,7 +323,6 @@ pub enum AccountGenerateRequest {
 
 pub const SENDER_SEED: &str = "//Sender";
 pub const RECEIVER_SEED: &str = "//Receiver";
-pub const SEED: &str = "bottom drive obey lake curtain smoke basket hold race lonely fit walk";
 
 pub fn generate_ecdsa_keypair(description: AccountGenerateRequest) -> EthKeypair {
 	match description {
