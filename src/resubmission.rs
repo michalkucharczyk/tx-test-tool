@@ -132,12 +132,10 @@ impl<T: TxTask + 'static> DefaultResubmissionQueue<T> {
 					trace!(target: LOG_TARGET, "B RUN-QUEUE {}", waiting_queue.len());
 					waiting_queue.next().await
 				};
-				if let Some(t) = task {
-					if let Some(t) = t {
-						trace!(target: LOG_TARGET, "M B RUN-QUEUE {:?}", t.tx().hash());
-						self.ready_queue.write().push(t);
-						trace!(target: LOG_TARGET, "M A RUN-QUEUE");
-					}
+				if let Some(t) = task.flatten() {
+					trace!(target: LOG_TARGET, "M B RUN-QUEUE {:?}", t.tx().hash());
+					self.ready_queue.write().push(t);
+					trace!(target: LOG_TARGET, "M A RUN-QUEUE");
 				}
 				trace!(target: LOG_TARGET, "A RUN-QUEUE");
 			}
@@ -162,12 +160,10 @@ impl<T: TxTask + 'static> DefaultResubmissionQueue<T> {
 			}
 			tokio::select! {
 				task = waiting_queue.next() => {
-					if let Some(t) = task {
-						if let Some(t) = t {
+					if let Some(t) = task.flatten() {
 							trace!(target: LOG_TARGET, "M RUN-QUEUE {:?}", t.tx().hash());
 							self.ready_queue.write().push(t);
 							trace!(target: LOG_TARGET, "M A RUN-QUEUE");
-						}
 					}
 				}
 				pending = resubmission_request_rx.recv() => {
@@ -200,7 +196,7 @@ impl<T: TxTask> DefaultResubmissionQueue<T> {
 		let mut min_index = 0;
 		let mut min_nonce = queue[0].tx().nonce();
 
-		for (i, item) in queue.iter().enumerate().skip(1) {
+		for (i, _) in queue.iter().enumerate().skip(1) {
 			let nonce = queue[i].tx().nonce();
 			if nonce < min_nonce {
 				min_index = i;

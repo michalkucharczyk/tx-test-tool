@@ -11,11 +11,8 @@ use tokio::{
 };
 use tracing::{info, trace};
 
-const LOG_TARGET: &str = "block_monitor";
-
 pub type BlockMonitorTask = Pin<Box<dyn Future<Output = ()> + Send>>;
 
-type BlockNumber = u64;
 pub type TxFoundListener<H> = oneshot::Receiver<H>;
 type TxFoundListenerTrigger<H> = oneshot::Sender<H>;
 type HashOf<C> = <C as subxt::Config>::Hash;
@@ -65,7 +62,7 @@ impl<C: subxt::Config> BlockMonitor<C> {
 		let extrinsics_count = extrinsics.len();
 		if finalized {
 			for ext in extrinsics.iter() {
-				let ext = ext?;
+				let ext = ext;
 				let hash = <C as subxt::Config>::Hasher::hash_of(&ext.bytes());
 				if let Some(trigger) = callbacks.remove(&hash) {
 					trace!(?hash, "found transaction, notifying");

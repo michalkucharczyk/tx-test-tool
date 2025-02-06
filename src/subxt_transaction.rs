@@ -1,10 +1,9 @@
 use crate::{
 	block_monitor::BlockMonitor,
-	cli::AccountsDescription,
 	error::Error,
 	transaction::{
-		AccountMetadata, ResubmitHandler, Transaction, TransactionCall, TransactionMonitor,
-		TransactionRecipe, TransactionStatus, TransactionsSink,
+		AccountMetadata, AccountsDescription, ResubmitHandler, Transaction, TransactionCall,
+		TransactionMonitor, TransactionRecipe, TransactionStatus, TransactionsSink,
 	},
 };
 use async_trait::async_trait;
@@ -29,9 +28,9 @@ use subxt::{
 	tx::{DynamicPayload, Signer, SubmittableExtrinsic},
 	OnlineClient, PolkadotConfig,
 };
-use subxt_core::config::SubstrateExtrinsicParamsBuilder;
+use subxt_core::{config::SubstrateExtrinsicParamsBuilder, utils::AccountId20};
 use subxt_signer::{
-	eth::{dev as eth_dev, AccountId20, Keypair as EthKeypair, Signature},
+	eth::{dev as eth_dev, Keypair as EthKeypair, Signature},
 	sr25519::{dev as sr25519_dev, Keypair as SrPair},
 };
 use tracing::{debug, trace};

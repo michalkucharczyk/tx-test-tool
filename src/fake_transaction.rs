@@ -80,10 +80,10 @@ impl EventDef {
 	pub fn validated(delay: u32) -> Self {
 		Self { event: TransactionStatus::Validated, delay }
 	}
-	pub fn broadcasted(delay: u32, num: u32) -> Self {
+	pub fn broadcasted(delay: u32) -> Self {
 		Self {
 			//todo
-			event: TransactionStatus::Broadcasted(num),
+			event: TransactionStatus::Broadcasted,
 			delay,
 		}
 	}
@@ -178,7 +178,7 @@ impl FakeTransaction {
 			hash,
 			vec![
 				EventsStreamDef(vec![
-					EventDef::broadcasted(delay, 3),
+					EventDef::broadcasted(delay),
 					EventDef::validated(delay),
 					EventDef::in_block(1, delay),
 					EventDef::in_block(2, delay),
@@ -186,7 +186,7 @@ impl FakeTransaction {
 					EventDef::dropped(delay),
 				]),
 				EventsStreamDef(vec![
-					EventDef::broadcasted(delay, 3),
+					EventDef::broadcasted(delay),
 					EventDef::validated(delay),
 					EventDef::in_block(1, delay),
 					EventDef::in_block(2, delay),
@@ -203,7 +203,7 @@ impl FakeTransaction {
 			vec![
 				EventsStreamDef(vec![EventDef::dropped(delay)]),
 				EventsStreamDef(vec![
-					EventDef::broadcasted(delay, 3),
+					EventDef::broadcasted(delay),
 					EventDef::validated(delay),
 					EventDef::in_block(1, delay),
 					EventDef::in_block(2, delay),
@@ -244,7 +244,7 @@ impl FakeTransaction {
 		Self::new(
 			hash,
 			EventsStreamDef(vec![
-				EventDef::broadcasted(delay, 3),
+				EventDef::broadcasted(delay),
 				EventDef::validated(delay),
 				EventDef::in_block(1, delay),
 				EventDef::in_block(2, delay),
@@ -258,7 +258,7 @@ impl FakeTransaction {
 		Self::new(
 			hash,
 			EventsStreamDef(vec![
-				EventDef::broadcasted(100, 3),
+				EventDef::broadcasted(100),
 				EventDef::validated(300),
 				EventDef::in_block(1, 1000),
 				EventDef::in_block(2, 1000),
@@ -305,7 +305,7 @@ impl FakeTransaction {
 				Err(Error::Other(format!("submit-error:error:{message}").to_string())),
 			TransactionStatus::Validated |
 			TransactionStatus::NoLongerInBestBlock |
-			TransactionStatus::Broadcasted(_) |
+			TransactionStatus::Broadcasted |
 			TransactionStatus::InBlock(_) => todo!(),
 		}
 	}
@@ -322,7 +322,7 @@ mod test {
 		let t = FakeTransaction::new(
 			1,
 			EventsStreamDef(vec![
-				EventDef::broadcasted(100, 3),
+				EventDef::broadcasted(100),
 				EventDef::validated(300),
 				EventDef::in_block(1, 1000),
 				EventDef::in_block(2, 1000),
@@ -334,7 +334,7 @@ mod test {
 		assert_eq!(
 			v,
 			vec![
-				TransactionStatus::Broadcasted(3),
+				TransactionStatus::Broadcasted,
 				TransactionStatus::Validated,
 				TransactionStatus::InBlock(1u32.to_le_bytes().into()),
 				TransactionStatus::InBlock(2u32.to_le_bytes().into()),

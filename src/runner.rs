@@ -288,7 +288,6 @@ where
 		for _ in 0..to_consume {
 			let task = self.pop();
 			if let Some(task) = task {
-				let hash = task.tx().hash();
 				nonces.push(task.tx().nonce());
 				let log = self.logs[&task.tx().hash()].clone();
 				log.push_event(ExecutionEvent::popped());
@@ -328,14 +327,12 @@ where
 		let original_transactions_count = self.transactions.len();
 		let mut workers = FuturesUnordered::new();
 
-		let mut i = 0;
 		for _ in 0..self.initial_tasks {
 			if let Some(t) = self.transactions.pop() {
 				let t = Box::new(t);
 				let log = self.logs[&t.tx().hash()].clone();
 				log.push_event(ExecutionEvent::popped());
 				workers.push(t.execute(log, self.rpc.clone()));
-				i += 1;
 			} else {
 				break;
 			}
@@ -415,15 +412,13 @@ mod tests {
 	use subxt_signer::eth::dev;
 	use tracing::trace;
 
-	type FakeTxRunner =
-		Runner<FakeTxTask, FakeTransactionSink, DefaultResubmissionQueue<FakeTxTask>>;
 	pub type FakeTxTask = DefaultTxTask<FakeTransaction>;
 
 	#[tokio::test]
 	async fn oh_god() {
 		init_logger();
 
-		let rpc = FakeTransactionSink::new();
+		let rpc = FakeTransactionSink::default();
 		let mut transactions = (0..10)
 			.map(|i| FakeTxTask::new_watched(FakeTransaction::new_finalizable_quick(i)))
 			// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
@@ -465,7 +460,7 @@ mod tests {
 				// // Substrate:
 				// Value::unnamed_variant("Id", [Value::from_bytes(receiver.public())]),
 				// Eth:
-				Value::unnamed_composite(vec![Value::from_bytes(alith.account_id())]),
+				Value::unnamed_composite(vec![Value::from_bytes(alith.public_key())]),
 				Value::u128(1u32.into()),
 			],
 		);
@@ -481,6 +476,8 @@ mod tests {
 		tx
 	}
 
+	// This test needs a network up with a collator responding on 127.0.0.1:9933
+	#[ignore]
 	#[tokio::test]
 	async fn oh_god2() {
 		init_logger();
@@ -512,7 +509,7 @@ mod tests {
 	async fn resubmit() {
 		init_logger();
 
-		let rpc = FakeTransactionSink::new();
+		let rpc = FakeTransactionSink::default();
 		let transactions = (0..100000)
 			.map(|i| FakeTxTask::new_watched(FakeTransaction::new_droppable_2nd_success(i, 0)))
 			// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
@@ -525,13 +522,15 @@ mod tests {
 			FakeTransactionSink,
 			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
 		>::new(100000, rpc, transactions, queue);
+
 		join(queue_task, r.run_poc2()).await;
 	}
 
 	#[tokio::test]
 	async fn read_json() {
 		init_logger();
-		let logs = Journal::<DefaultTxTask<FakeTransaction>>::load_logs("out_20240801_164155.json");
+		let logs =
+			Journal::<DefaultTxTask<FakeTransaction>>::load_logs("tests/out_20250206_151339.json");
 		make_stats(logs.values().cloned(), true);
 	}
 }

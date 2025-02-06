@@ -5,8 +5,8 @@ edition = "2021"
 description = "xxx"
 
 [[bin]]
-name="ttxt"
-path="src/main.rs"
+name = "ttxt"
+path = "src/main.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -14,26 +14,43 @@ path="src/main.rs"
 async-trait = "0.1.81"
 futures = "0.3.30"
 futures-util = "0.3.30"
-jsonrpsee = { version = "0.22.0", features = ["async-client", "client-web-transport", "jsonrpsee-types"] }
+jsonrpsee = { version = "0.24.8", features = [
+	"async-client",
+	"client-web-transport",
+	"jsonrpsee-types",
+] }
 # jsonrpsee-types = "0.24.0"
-parking_lot = "0.12.3"
-rand = "0.8.5"
-subxt = {version = "0.37.0", features =["substrate-compat"] }
-subxt-signer = { version = "0.37.0", features = ["unstable-eth"] }
-subxt-core = "0.37.0"
-thiserror = "1.0.63"
-time = { version = "0.3.36", features = ["formatting", "local-offset", "macros"] }
-tokio = { version = "1.39.1", features = ["macros", "time", "rt-multi-thread", "sync"] }
-tokio-util = { version = "0.7.11", features = ["compat"] }
-tracing = "0.1.40"
-tracing-subscriber = {version = "0.3.18", features = ["time","fmt","env-filter"] }
-serde = "1.0.204"
-serde_json = {version = "1.0.121", features = ["arbitrary_precision"]}
-termplot = "0.1.1"
 average = "0.15.1"
-parity-scale-codec = "3.6.12"
 chrono = "0.4.38"
-hex = "0.4.3"
 clap = { version = "4.5.3", features = ["derive"] }
 clap_derive = { version = "4.0.0-rc.1" }
 ctrlc = "3.4.4"
+hex = "0.4.3"
+parity-scale-codec = "3.6.12"
+parking_lot = "0.12.3"
+rand = "0.9.0"
+serde = "1.0.204"
+serde_json = { version = "1.0.121", features = ["arbitrary_precision"] }
+subxt = { version = "0.39.0" }
+subxt-core = "0.39.0"
+subxt-signer = { version = "0.39.0", features = ["unstable-eth"] }
+termplot = "0.1.1"
+thiserror = "2.0.11"
+time = { version = "0.3.36", features = [
+	"formatting",
+	"local-offset",
+	"macros",
+] }
+tokio = { version = "1.39.1", features = [
+	"macros",
+	"rt-multi-thread",
+	"sync",
+	"time",
+] }
+tokio-util = { version = "0.7.11", features = ["compat"] }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = [
+	"env-filter",
+	"fmt",
+	"time",
+] }

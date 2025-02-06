@@ -129,7 +129,7 @@ impl Counters {
 			ExecutionEvent::FinalizedMonitor(_, _) => Self::inc(&self.finalized_monitor),
 			ExecutionEvent::TxPoolEvent(_, status) => match status {
 				TransactionStatus::Validated => Self::inc(&self.ts_validated),
-				TransactionStatus::Broadcasted(_) => Self::inc(&self.ts_broadcasted),
+				TransactionStatus::Broadcasted => Self::inc(&self.ts_broadcasted),
 				TransactionStatus::Finalized(_) => Self::inc(&self.ts_finalized),
 				TransactionStatus::Dropped(_) => Self::inc(&self.ts_dropped),
 				TransactionStatus::Invalid(_) => Self::inc(&self.ts_invalid),
@@ -308,7 +308,7 @@ impl<H: BlockHash + 'static> ExecutionLog for DefaultExecutionLog<H> {
 
 	fn time_to_broadcasted(&self) -> Option<Duration> {
 		let bts = self.events.read().iter().find_map(|e| match e {
-			ExecutionEvent::TxPoolEvent(i, TransactionStatus::Broadcasted(_)) => Some(*i),
+			ExecutionEvent::TxPoolEvent(i, TransactionStatus::Broadcasted) => Some(*i),
 			_ => None,
 		});
 		Self::duration_since_timestamp(self.get_sent_time_stamp(), bts)
