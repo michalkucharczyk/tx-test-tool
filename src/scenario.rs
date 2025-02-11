@@ -67,16 +67,14 @@ impl ScenarioExecutor {
 				}
 				self.build_transactions(builder, sink, tx_build_params, unwatched).await
 			},
-			SendingScenario::FromManyAccounts { start_id, last_id, mut from, count } => {
+			SendingScenario::FromManyAccounts { start_id, last_id, from, count } => {
 				let mut tx_build_params = vec![];
-
 				for account in *start_id..=*last_id {
+					let mut nonce = from.clone();
 					for _ in 0..*count {
-						tx_build_params.push(TransactionBuildParams {
-							account: account.to_string(),
-							nonce: from,
-						});
-						from = from.map(|n| n + 1);
+						tx_build_params
+							.push(TransactionBuildParams { account: account.to_string(), nonce });
+						nonce = nonce.map(|n| n + 1);
 					}
 				}
 
