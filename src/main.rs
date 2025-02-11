@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
+use futures::future::join;
 use txtesttool::{
 	block_monitor::BlockMonitor,
 	cli::{ChainType, Cli, CliCommand},
@@ -43,17 +44,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 			let recipe = remark.map_or_else(TransactionRecipe::transfer, TransactionRecipe::remark);
 			let scenario_executor =
 				ScenarioExecutor::new(ws, scenario.clone(), recipe, *block_monitor).await;
-			// TODO: drive the runner & queue_task & install ctrl_c
 			match chain {
 				ChainType::Fake => {
 					let ((stop_runner_tx, runner), queue_task) =
 						RunnerFactory::fake_runner(scenario_executor, *send_threshold, *unwatched)
 							.await;
+					ctrlc::set_handler(move || {
+						block_on(stop_runner_tx.send(()))
+							.expect("Could not send signal on channel.")
+					})
+					.expect("Error setting Ctrl-C handler");
+					join(queue_task, runner.run_poc2()).await;
 				},
 				ChainType::Eth => {
 					let ((stop_runner_tx, runner), queue_task) =
 						RunnerFactory::eth_runner(scenario_executor, *send_threshold, *unwatched)
 							.await;
+					ctrlc::set_handler(move || {
+						block_on(stop_runner_tx.send(()))
+							.expect("Could not send signal on channel.")
+					})
+					.expect("Error setting Ctrl-C handler");
+					join(queue_task, runner.run_poc2()).await;
 				},
 				ChainType::Sub => {
 					let ((stop_runner_tx, runner), queue_task) = RunnerFactory::substrate_runner(
@@ -62,6 +74,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						*unwatched,
 					)
 					.await;
+					ctrlc::set_handler(move || {
+						block_on(stop_runner_tx.send(()))
+							.expect("Could not send signal on channel.")
+					})
+					.expect("Error setting Ctrl-C handler");
+
+					join(queue_task, runner.run_poc2()).await;
 				},
 			}
 		},
