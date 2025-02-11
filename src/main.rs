@@ -43,6 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 			let recipe = remark.map_or_else(TransactionRecipe::transfer, TransactionRecipe::remark);
 			let scenario_executor =
 				ScenarioExecutor::new(ws, scenario.clone(), recipe, *block_monitor).await;
+			// TODO: drive the runner & queue_task & install ctrl_c
 			match chain {
 				ChainType::Fake => {
 					let ((stop_runner_tx, runner), queue_task) =
