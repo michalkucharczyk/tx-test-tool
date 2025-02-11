@@ -141,3 +141,87 @@ impl ScenarioExecutor {
 		txs
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	// TODO:
+	// - Add tests that check how the nonce is set in the sending scenario is accounted for in
+	// transactions building.
+
+	use crate::{
+		cli::SendingScenario, fake_transaction_sink::FakeTransactionsSink,
+		transaction::TransactionRecipe, FakeTransactionBuilder,
+	};
+
+	use super::ScenarioExecutor;
+
+	#[tokio::test]
+	async fn test_generate_one_shot() {
+		let scenario_executor = ScenarioExecutor::new(
+			"",
+			SendingScenario::OneShot { account: "0".to_owned(), nonce: Some(50) },
+			TransactionRecipe::transfer(),
+			false,
+		)
+		.await;
+		// Fake transaction sink builds txs based on nonces computed internally,
+		// per given account. Scenario nonces are not taken into considerations.
+		let txs = scenario_executor
+			.generate_transactions(
+				FakeTransactionBuilder::default(),
+				FakeTransactionsSink::default(),
+				false,
+			)
+			.await;
+		// We're asserting on the number of txs created, not on their nonces.
+		assert_eq!(txs.len(), 1);
+	}
+
+	#[tokio::test]
+	async fn test_generate_from_single_account() {
+		let scenario_executor = ScenarioExecutor::new(
+			"",
+			SendingScenario::FromSingleAccount {
+				account: "0".to_string(),
+				from: Some(0),
+				count: 100,
+			},
+			TransactionRecipe::transfer(),
+			false,
+		)
+		.await;
+		// Fake transaction sink builds txs based on nonces computed internally,
+		// per given account. Scenario nonces are not taken into considerations.
+		let txs = scenario_executor
+			.generate_transactions(
+				FakeTransactionBuilder::default(),
+				FakeTransactionsSink::default(),
+				false,
+			)
+			.await;
+		// We're asserting on the number of txs created, not on their nonces.
+		assert_eq!(txs.len(), 100);
+	}
+
+	#[tokio::test]
+	async fn test_generate_from_many_accounts() {
+		let scenario_executor = ScenarioExecutor::new(
+			"",
+			SendingScenario::FromManyAccounts { start_id: 0, last_id: 2, from: Some(0), count: 30 },
+			TransactionRecipe::transfer(),
+			false,
+		)
+		.await;
+		// Fake transaction sink builds txs based on nonces computed internally,
+		// per given account. Scenario nonces are not taken into considerations.
+		let txs = scenario_executor
+			.generate_transactions(
+				FakeTransactionBuilder::default(),
+				FakeTransactionsSink::default(),
+				false,
+			)
+			.await;
+		// We're asserting on the number of txs created, not on their nonces.
+		assert_eq!(txs.len(), 90);
+	}
+}
