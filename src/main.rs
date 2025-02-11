@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
-use futures::future::join;
+use futures::{executor::block_on, future::join};
 use txtesttool::{
 	block_monitor::BlockMonitor,
 	cli::{ChainType, Cli, CliCommand},
@@ -46,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				ScenarioExecutor::new(ws, scenario.clone(), recipe, *block_monitor).await;
 			match chain {
 				ChainType::Fake => {
-					let ((stop_runner_tx, runner), queue_task) =
+					let ((stop_runner_tx, mut runner), queue_task) =
 						RunnerFactory::fake_runner(scenario_executor, *send_threshold, *unwatched)
 							.await;
 					ctrlc::set_handler(move || {
@@ -57,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					join(queue_task, runner.run_poc2()).await;
 				},
 				ChainType::Eth => {
-					let ((stop_runner_tx, runner), queue_task) =
+					let ((stop_runner_tx, mut runner), queue_task) =
 						RunnerFactory::eth_runner(scenario_executor, *send_threshold, *unwatched)
 							.await;
 					ctrlc::set_handler(move || {
@@ -68,12 +68,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					join(queue_task, runner.run_poc2()).await;
 				},
 				ChainType::Sub => {
-					let ((stop_runner_tx, runner), queue_task) = RunnerFactory::substrate_runner(
-						scenario_executor,
-						*send_threshold,
-						*unwatched,
-					)
-					.await;
+					let ((stop_runner_tx, mut runner), queue_task) =
+						RunnerFactory::substrate_runner(
+							scenario_executor,
+							*send_threshold,
+							*unwatched,
+						)
+						.await;
 					ctrlc::set_handler(move || {
 						block_on(stop_runner_tx.send(()))
 							.expect("Could not send signal on channel.")

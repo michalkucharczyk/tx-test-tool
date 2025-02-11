@@ -528,7 +528,7 @@ mod tests {
 	use super::*;
 	use crate::{
 		fake_transaction::FakeTransaction,
-		fake_transaction_sink::FakeTransactionSink,
+		fake_transaction_sink::FakeTransactionsSink,
 		init_logger,
 		resubmission::DefaultResubmissionQueue,
 		subxt_api_connector,
@@ -548,7 +548,7 @@ mod tests {
 	async fn oh_god() {
 		init_logger();
 
-		let rpc = FakeTransactionSink::default();
+		let rpc = FakeTransactionsSink::default();
 		let mut transactions = (0..10)
 			.map(|i| FakeTxTask::new_watched(FakeTransaction::new_finalizable_quick(i)))
 			// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
@@ -563,7 +563,7 @@ mod tests {
 
 		let (_c, mut r) = Runner::<
 			DefaultTxTask<FakeTransaction>,
-			FakeTransactionSink,
+			FakeTransactionsSink,
 			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
 		>::new(5, rpc, transactions, queue);
 		join(queue_task, r.run_poc2()).await;
@@ -639,7 +639,7 @@ mod tests {
 	async fn resubmit() {
 		init_logger();
 
-		let rpc = FakeTransactionSink::default();
+		let rpc = FakeTransactionsSink::default();
 		let transactions = (0..100000)
 			.map(|i| FakeTxTask::new_watched(FakeTransaction::new_droppable_2nd_success(i, 0)))
 			// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
@@ -649,7 +649,7 @@ mod tests {
 
 		let (_, mut r) = Runner::<
 			DefaultTxTask<FakeTransaction>,
-			FakeTransactionSink,
+			FakeTransactionsSink,
 			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
 		>::new(100000, rpc, transactions, queue);
 
