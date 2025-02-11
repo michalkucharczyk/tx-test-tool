@@ -1,12 +1,89 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
-use crate::transaction::{ChainType, SendingScenario};
+use crate::scenario::AccountsDescription;
 
 #[derive(Parser)]
 #[clap(name = "txtt")]
 pub struct Cli {
 	#[clap(subcommand)]
 	pub command: CliCommand,
+}
+
+#[derive(ValueEnum, Clone)]
+pub enum ChainType {
+	/// Substrate compatible chain.
+	Sub,
+	/// Etheruem compatible chain.
+	Eth,
+	/// Do not send transactions anywhere, just for dev/testing.
+	Fake,
+}
+
+#[derive(Subcommand, Clone)]
+/// Send transactions to the node using different scenarios.
+pub enum SendingScenario {
+	/// Send single transactions to the node.
+	OneShot {
+		/// Account identifier to be used. It can be keyring account (alice, bob,...) or number of
+		/// pre-funded account, index used for derivation.
+		#[clap(long, default_value = "alice")]
+		account: String,
+		/// Nonce used for the account.
+		#[clap(long)]
+		nonce: Option<u128>,
+	},
+	/// Send multiple transactions to the node using a single account.
+	FromSingleAccount {
+		/// Account identifier to be used. It can be keyring account (alice, bob,...) or number of
+		/// pre-funded account, index used for derivation.
+		#[clap(long, default_value = "alice")]
+		account: String,
+		/// Starting nonce for 1st transaction in the batch. If not given the current nonce for
+		/// the account will be fetched from node for the first transaction in the batch.
+		#[clap(long)]
+		from: Option<u128>,
+		/// Number of transaction in the batch.
+		#[clap(long, default_value_t = 1)]
+		count: u32,
+	},
+	/// Send multiple transactions to the node using multiple accounts.
+	FromManyAccounts {
+		/// First account identifier to be used (index of the pre-funded account used for a
+		/// derivation).
+		#[clap(long)]
+		start_id: u32,
+		/// Last account identifier to be used.
+		#[clap(long)]
+		last_id: u32,
+		/// Starting nonce of transactions batch. If not given the current nonce for each account
+		/// will be fetched from node.
+		#[clap(long)]
+		from: Option<u128>,
+		/// Number of transaction in the batch per account.
+		#[clap(long, default_value_t = 1)]
+		count: u32,
+	},
+}
+
+impl SendingScenario {
+	pub fn get_accounts_description(&self) -> AccountsDescription {
+		match self {
+			Self::OneShot { account, .. } =>
+				if let Ok(id) = account.parse::<u32>() {
+					AccountsDescription::Derived(id..id + 1)
+				} else {
+					AccountsDescription::Keyring(account.clone())
+				},
+			Self::FromManyAccounts { start_id, last_id, .. } =>
+				AccountsDescription::Derived(*start_id..last_id + 1),
+			Self::FromSingleAccount { account, .. } =>
+				if let Ok(id) = account.parse::<u32>() {
+					AccountsDescription::Derived(id..id + 1)
+				} else {
+					AccountsDescription::Keyring(account.clone())
+				},
+		}
+	}
 }
 
 #[derive(Subcommand)]
@@ -38,6 +115,7 @@ pub enum CliCommand {
 		/// sent.
 		#[clap(long)]
 		remark: Option<u32>,
+		/// Type of scenario - transfer or remark.
 		#[clap(subcommand)]
 		scenario: SendingScenario,
 	},

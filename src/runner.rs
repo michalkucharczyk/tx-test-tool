@@ -1,10 +1,22 @@
 use crate::{
+	block_monitor::BlockMonitor,
 	execution_log::{
 		journal::Journal, make_stats, Counters, DefaultExecutionLog, ExecutionEvent, ExecutionLog,
 		Logs, STAT_TARGET,
 	},
-	resubmission::{NeedsResubmit, ResubmissionQueue, ResubmitReason},
+	fake_transaction::FakeTransaction,
+	fake_transaction_sink::FakeTransactionsSink,
+	resubmission::{
+		DefaultResubmissionQueue, NeedsResubmit, ResubmissionQueue, ResubmissionQueueTask,
+		ResubmitReason,
+	},
+	scenario::ScenarioExecutor,
+	subxt_transaction::{
+		generate_ecdsa_keypair, generate_sr25519_keypair, EthTransaction, EthTransactionsSink,
+		SubstrateTransaction, SubstrateTransactionsSink,
+	},
 	transaction::{ResubmitHandler, Transaction, TransactionStatusIsTerminal, TransactionsSink},
+	EthTransactionBuilder, FakeTransactionBuilder, SubstrateTransactionBuilder,
 };
 use async_trait::async_trait;
 use futures::{stream::FuturesUnordered, Future, StreamExt};
@@ -226,7 +238,7 @@ where
 		initial_tasks: usize,
 		rpc: Sink,
 		transactions: Vec<T>,
-		resubmission_queue: Queue,
+		queue: Queue,
 	) -> (Sender<()>, Self) {
 		let event_counters = Arc::from(Counters::default());
 		let logs = transactions
@@ -247,7 +259,7 @@ where
 				logs,
 				transactions,
 				rpc: rpc.into(),
-				resubmission_queue,
+				resubmission_queue: queue,
 				done: Default::default(),
 				errors: Default::default(),
 				stop_rx: rx,
@@ -322,7 +334,7 @@ where
 		};
 	}
 
-	pub async fn run_poc2(&mut self) {
+	pub async fn run_poc2(&mut self) -> Logs<T> {
 		let start = Instant::now();
 		let original_transactions_count = self.transactions.len();
 		let mut workers = FuturesUnordered::new();
@@ -389,7 +401,125 @@ where
 		// info!("logs {:#?}", self.logs);
 		Journal::<T>::save_logs(self.logs.clone());
 		info!(target: STAT_TARGET, total_duration = ?start.elapsed(), ?original_transactions_count);
-		make_stats(self.logs.values().cloned(), false)
+		make_stats(self.logs.values().cloned(), false);
+		self.logs.clone()
+	}
+}
+
+/// Returns a specific [`Runner`] based on the chain
+/// where transactions will be executed.
+pub struct RunnerFactory;
+impl RunnerFactory {
+	/// Returns a runner of transactions for the [`ChainType::Sub`].
+	pub async fn substrate_runner(
+		scenario_executor: ScenarioExecutor,
+		send_threshold: u32,
+		unwatched: bool,
+	) -> (
+		(
+			Sender<()>,
+			Runner<
+				DefaultTxTask<SubstrateTransaction>,
+				SubstrateTransactionsSink,
+				DefaultResubmissionQueue<DefaultTxTask<SubstrateTransaction>>,
+			>,
+		),
+		ResubmissionQueueTask,
+	) {
+		let def = scenario_executor.scenario.get_accounts_description();
+		let builder = SubstrateTransactionBuilder::default();
+		let sink = SubstrateTransactionsSink::new_with_uri_with_accounts_description(
+			scenario_executor.ws.as_str(),
+			def,
+			generate_sr25519_keypair,
+			if scenario_executor.block_monitor {
+				Some(BlockMonitor::new(scenario_executor.ws.as_str()).await)
+			} else {
+				None
+			},
+		)
+		.await;
+		let txs = scenario_executor.generate_transactions(builder, sink.clone(), unwatched).await;
+		let (queue, queue_task) = DefaultResubmissionQueue::new();
+		(
+			Runner::<
+				DefaultTxTask<SubstrateTransaction>,
+				SubstrateTransactionsSink,
+				DefaultResubmissionQueue<DefaultTxTask<SubstrateTransaction>>,
+			>::new(send_threshold as usize, sink, txs.into_iter().rev().collect(), queue),
+			queue_task,
+		)
+	}
+
+	/// Returns a runner of transactions for the [`ChainType::Eth`].
+	pub async fn eth_runner(
+		scenario_executor: ScenarioExecutor,
+		send_threshold: u32,
+		unwatched: bool,
+	) -> (
+		(
+			Sender<()>,
+			Runner<
+				DefaultTxTask<EthTransaction>,
+				EthTransactionsSink,
+				DefaultResubmissionQueue<DefaultTxTask<EthTransaction>>,
+			>,
+		),
+		ResubmissionQueueTask,
+	) {
+		let def = scenario_executor.scenario.get_accounts_description();
+		let builder = EthTransactionBuilder::default();
+		let sink = EthTransactionsSink::new_with_uri_with_accounts_description(
+			scenario_executor.ws.as_str(),
+			def,
+			generate_ecdsa_keypair,
+			if scenario_executor.block_monitor {
+				Some(BlockMonitor::new(scenario_executor.ws.as_str()).await)
+			} else {
+				None
+			},
+		)
+		.await;
+		let txs = scenario_executor.generate_transactions(builder, sink.clone(), unwatched).await;
+		let (queue, queue_task) = DefaultResubmissionQueue::new();
+		(
+			Runner::<
+				DefaultTxTask<EthTransaction>,
+				EthTransactionsSink,
+				DefaultResubmissionQueue<DefaultTxTask<EthTransaction>>,
+			>::new(send_threshold as usize, sink, txs.into_iter().rev().collect(), queue),
+			queue_task,
+		)
+	}
+
+	/// Returns a runner of transactions for the [`ChainType::Fake`].
+	pub async fn fake_runner(
+		scenario_executor: ScenarioExecutor,
+		send_threshold: u32,
+		unwatched: bool,
+	) -> (
+		(
+			Sender<()>,
+			Runner<
+				DefaultTxTask<FakeTransaction>,
+				FakeTransactionsSink,
+				DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
+			>,
+		),
+		ResubmissionQueueTask,
+	) {
+		let builder = FakeTransactionBuilder::default();
+		let sink = FakeTransactionsSink::default();
+		let txs = scenario_executor.generate_transactions(builder, sink.clone(), unwatched).await;
+		let (queue, queue_task) = DefaultResubmissionQueue::new();
+		(
+			Runner::<
+				DefaultTxTask<FakeTransaction>,
+				FakeTransactionsSink,
+				DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
+			>::new(send_threshold as usize, sink, txs.into_iter().rev().collect(), queue),
+			queue_task,
+		)
 	}
 }
 

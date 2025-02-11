@@ -1,9 +1,10 @@
 use crate::{
 	block_monitor::BlockMonitor,
 	error::Error,
+	scenario::AccountsDescription,
 	transaction::{
-		AccountMetadata, AccountsDescription, ResubmitHandler, Transaction, TransactionCall,
-		TransactionMonitor, TransactionRecipe, TransactionStatus, TransactionsSink,
+		AccountMetadata, ResubmitHandler, Transaction, TransactionCall, TransactionMonitor,
+		TransactionRecipe, TransactionStatus, TransactionsSink,
 	},
 };
 use async_trait::async_trait;

@@ -1,20 +1,17 @@
-use crate::{runner::TxTask, transaction::Transaction};
-use std::sync::Arc;
+use crate::transaction::Transaction;
 
 use crate::{
 	fake_transaction::{FakeHash, FakeTransaction},
-	fake_transaction_sink::FakeTransactionSink,
-	resubmission::DefaultResubmissionQueue,
-	runner::{DefaultTxTask, Runner},
+	fake_transaction_sink::FakeTransactionsSink,
+	runner::DefaultTxTask,
 	subxt_transaction::{
 		build_eth_tx_payload, build_substrate_tx_payload, build_subxt_tx, EthRuntimeConfig,
 		EthTransaction, EthTransactionsSink, HashOf, SubstrateTransaction,
 		SubstrateTransactionsSink,
 	},
-	transaction::{ResubmitHandler, SendingScenario, TransactionRecipe, TransactionsSink},
+	transaction::{TransactionRecipe, TransactionsSink},
 };
 use async_trait::async_trait;
-use futures::{executor::block_on, future::join};
 use subxt::{config::BlockHash, PolkadotConfig};
 
 pub mod block_monitor;
@@ -25,6 +22,7 @@ pub mod fake_transaction;
 pub mod fake_transaction_sink;
 pub mod resubmission;
 pub mod runner;
+pub mod scenario;
 pub mod subxt_api_connector;
 pub mod subxt_transaction;
 pub mod transaction;
@@ -95,7 +93,7 @@ pub struct FakeTransactionBuilder {}
 impl TransactionBuilder for FakeTransactionBuilder {
 	type HashType = FakeHash;
 	type Transaction = FakeTransaction;
-	type Sink = FakeTransactionSink;
+	type Sink = FakeTransactionsSink;
 	async fn build_transaction<'a>(
 		&self,
 		account: &'a str,
@@ -182,122 +180,4 @@ impl TransactionBuilder for EthTransactionBuilder {
 			)
 		}
 	}
-}
-
-#[derive(Clone, Debug)]
-struct TransactionBuildParams {
-	account: String,
-	nonce: Option<u128>,
-}
-
-async fn build_transactions<H, T, S, B>(
-	builder: B,
-	sink: S,
-	unwatched: bool,
-	defs: Vec<TransactionBuildParams>,
-	recipe: &TransactionRecipe,
-) -> Vec<DefaultTxTask<T>>
-where
-	H: BlockHash + 'static,
-	T: Transaction<HashType = H> + ResubmitHandler + Send + 'static,
-	S: TransactionsSink<H> + 'static + Clone,
-	B: TransactionBuilder<HashType = H, Transaction = T, Sink = S> + Send + Sync + 'static,
-{
-	let n = defs.len();
-	let t = std::cmp::min(
-		n,
-		std::thread::available_parallelism().unwrap_or(1usize.try_into().unwrap()).get(),
-	);
-	let defs = Arc::<Vec<TransactionBuildParams>>::from(defs);
-	let builder = Arc::new(builder);
-	let mut threads = Vec::new();
-
-	(0..t).for_each(|thread_idx| {
-		let chunk = ((thread_idx * n) / t)..(((thread_idx + 1) * n) / t);
-		let defs = defs.clone();
-		let builder = builder.clone();
-		let sink = sink.clone();
-		let recipe = recipe.clone();
-		threads.push(tokio::task::spawn(async move {
-			let mut txs = vec![];
-			for i in chunk {
-				let d = defs[i].clone();
-				txs.push(
-					builder
-						.build_transaction(&d.account, &d.nonce, &sink, unwatched, &recipe)
-						.await,
-				);
-			}
-			txs
-		}));
-	});
-
-	let mut results = vec![];
-	for handle in threads {
-		let result = handle.await.unwrap();
-		results.push(result);
-	}
-	let mut v: Vec<_> = results.into_iter().flatten().collect();
-	v.sort_by_key(|k| k.tx().nonce());
-	v
-}
-
-pub async fn execute_scenario<H, T, S, B>(
-	sink: S,
-	builder: B,
-	scenario: &SendingScenario,
-	unwatched: bool,
-	send_threshold: usize,
-	recipe: &TransactionRecipe,
-) where
-	H: BlockHash + 'static,
-	T: Transaction<HashType = H> + ResubmitHandler + Send + 'static,
-	S: TransactionsSink<H> + 'static + Clone,
-	B: TransactionBuilder<HashType = H, Transaction = T, Sink = S> + Send + Sync + 'static,
-{
-	let transactions = match scenario {
-		SendingScenario::OneShot { account, nonce } => {
-			vec![builder.build_transaction(account, nonce, &sink, unwatched, recipe).await]
-		},
-		SendingScenario::FromSingleAccount { account, from, count } => {
-			let mut transactions_defs = vec![];
-			let mut nonce = *from;
-
-			for _ in 0..*count {
-				transactions_defs.push(TransactionBuildParams { account: account.clone(), nonce });
-				nonce = nonce.map(|n| n + 1);
-			}
-			build_transactions(builder, sink.clone(), unwatched, transactions_defs, recipe).await
-		},
-		SendingScenario::FromManyAccounts { start_id, last_id, from, count } => {
-			let mut transactions_defs = vec![];
-
-			for account in *start_id..=*last_id {
-				let mut nonce = *from;
-				for _ in 0..*count {
-					transactions_defs
-						.push(TransactionBuildParams { account: account.to_string(), nonce });
-					nonce = nonce.map(|n| n + 1);
-				}
-			}
-
-			build_transactions(builder, sink.clone(), unwatched, transactions_defs, recipe).await
-		},
-	};
-
-	let transactions = transactions.into_iter().rev().collect();
-	let (queue, queue_task) = DefaultResubmissionQueue::new();
-	let var_name = Runner::<DefaultTxTask<T>, S, DefaultResubmissionQueue<DefaultTxTask<T>>>::new(
-		send_threshold,
-		sink,
-		transactions,
-		queue,
-	);
-	let (stop_runner_tx, mut runner) = var_name;
-
-	ctrlc::set_handler(move || {
-		block_on(stop_runner_tx.send(())).expect("Could not send signal on channel.")
-	})
-	.expect("Error setting Ctrl-C handler");
-	join(queue_task, runner.run_poc2()).await;
 }

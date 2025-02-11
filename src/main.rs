@@ -3,18 +3,16 @@
 
 use txtesttool::{
 	block_monitor::BlockMonitor,
-	cli::{Cli, CliCommand},
-	execute_scenario,
+	cli::{ChainType, Cli, CliCommand},
 	execution_log::{journal::Journal, make_stats, STAT_TARGET},
 	fake_transaction::FakeTransaction,
-	fake_transaction_sink::FakeTransactionSink,
-	runner::DefaultTxTask,
+	runner::{DefaultTxTask, RunnerFactory},
+	scenario::{AccountsDescription, ScenarioExecutor},
 	subxt_transaction::{
 		self, generate_ecdsa_keypair, generate_sr25519_keypair, EthRuntimeConfig, EthTransaction,
 		EthTransactionsSink, SubstrateTransaction, SubstrateTransactionsSink,
 	},
-	transaction::{AccountsDescription, ChainType, TransactionRecipe},
-	EthTransactionBuilder, FakeTransactionBuilder, SubstrateTransactionBuilder,
+	transaction::TransactionRecipe,
 };
 
 use clap::Parser;
@@ -43,66 +41,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 			remark,
 		} => {
 			let recipe = remark.map_or_else(TransactionRecipe::transfer, TransactionRecipe::remark);
+			let scenario_executor =
+				ScenarioExecutor::new(ws, scenario.clone(), recipe, *block_monitor).await;
 			match chain {
 				ChainType::Fake => {
-					let sink = FakeTransactionSink::default();
-					let builder = FakeTransactionBuilder::default();
-					execute_scenario(
-						sink,
-						builder,
-						scenario,
-						*unwatched,
-						*send_threshold as usize,
-						&recipe,
-					)
-					.await;
+					let ((stop_runner_tx, runner), queue_task) =
+						RunnerFactory::fake_runner(scenario_executor, *send_threshold, *unwatched)
+							.await;
 				},
 				ChainType::Eth => {
-					let transaction_monitor =
-						if *block_monitor { Some(BlockMonitor::new(ws).await) } else { None };
-
-					let def = scenario.get_accounts_description();
-					let sink = EthTransactionsSink::new_with_uri_with_accounts_description(
-						ws,
-						def,
-						generate_ecdsa_keypair,
-						transaction_monitor,
-					)
-					.await;
-					let builder = EthTransactionBuilder::default();
-					execute_scenario(
-						sink,
-						builder,
-						scenario,
-						*unwatched,
-						*send_threshold as usize,
-						&recipe,
-					)
-					.await;
+					let ((stop_runner_tx, runner), queue_task) =
+						RunnerFactory::eth_runner(scenario_executor, *send_threshold, *unwatched)
+							.await;
 				},
 				ChainType::Sub => {
-					let transaction_monitor =
-						if *block_monitor { Some(BlockMonitor::new(ws).await) } else { None };
-					let def = scenario.get_accounts_description();
-					let sink = SubstrateTransactionsSink::new_with_uri_with_accounts_description(
-						ws,
-						def,
-						generate_sr25519_keypair,
-						transaction_monitor,
-					)
-					.await;
-					let builder = SubstrateTransactionBuilder::default();
-					execute_scenario(
-						sink,
-						builder,
-						scenario,
+					let ((stop_runner_tx, runner), queue_task) = RunnerFactory::substrate_runner(
+						scenario_executor,
+						*send_threshold,
 						*unwatched,
-						*send_threshold as usize,
-						&recipe,
 					)
 					.await;
 				},
-			};
+			}
 		},
 		CliCommand::CheckNonce { chain, ws, account } => {
 			match chain {
@@ -267,5 +227,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 			}
 		},
 	};
+
 	Ok(())
 }

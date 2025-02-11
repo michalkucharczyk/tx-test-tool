@@ -32,7 +32,7 @@ impl<C: subxt::Config> TransactionMonitor<HashOf<C>> for BlockMonitor<C> {
 }
 
 impl<C: subxt::Config> BlockMonitor<C> {
-	pub async fn new(uri: &String) -> Self {
+	pub async fn new(uri: &str) -> Self {
 		trace!(uri, "BlockNumber::new");
 		let api = OnlineClient::<C>::from_insecure_url(uri)
 			.await
@@ -62,7 +62,6 @@ impl<C: subxt::Config> BlockMonitor<C> {
 		let extrinsics_count = extrinsics.len();
 		if finalized {
 			for ext in extrinsics.iter() {
-				let ext = ext;
 				let hash = <C as subxt::Config>::Hasher::hash_of(&ext.bytes());
 				if let Some(trigger) = callbacks.remove(&hash) {
 					trace!(?hash, "found transaction, notifying");
@@ -78,7 +77,7 @@ impl<C: subxt::Config> BlockMonitor<C> {
 
 	async fn block_monitor_inner(
 		api: OnlineClient<C>,
-		mut listener_requrest_rx: mpsc::Receiver<(HashOf<C>, TxFoundListenerTrigger<HashOf<C>>)>,
+		mut listener_request_rx: mpsc::Receiver<(HashOf<C>, TxFoundListenerTrigger<HashOf<C>>)>,
 	) -> Result<(), Box<dyn std::error::Error>> {
 		let mut finalized_blocks_sub = api.blocks().subscribe_finalized().await?;
 		let mut best_blocks_sub = api.blocks().subscribe_best().await?;
@@ -94,9 +93,9 @@ impl<C: subxt::Config> BlockMonitor<C> {
 					Self::handle_block(&mut callbacks, block, false).await?;
 				}
 
-				Some(listener_request) = listener_requrest_rx.recv() => {
-					trace!("listener_request: {:?}", listener_request.0);
-					callbacks.insert(listener_request.0, listener_request.1);
+				Some((hash, tx)) = listener_request_rx.recv() => {
+					trace!("listener_request: {:?}", hash);
+					callbacks.insert(hash, tx);
 				}
 			}
 		}

@@ -16,13 +16,13 @@ use std::{
 use tracing::trace;
 
 #[derive(Default, Clone)]
-pub struct FakeTransactionSink {
+pub struct FakeTransactionsSink {
 	txs: Arc<RwLock<HashSet<FakeHash>>>,
 	pub(crate) nonces: Arc<RwLock<HashMap<String, u128>>>,
 }
 
 #[async_trait]
-impl TransactionsSink<FakeHash> for FakeTransactionSink {
+impl TransactionsSink<FakeHash> for FakeTransactionsSink {
 	async fn submit_and_watch(
 		&self,
 		tx: &dyn Transaction<HashType = FakeHash>,
@@ -73,7 +73,7 @@ mod test {
 
 	#[tokio::test]
 	async fn fake_sink_submit_and_watch_works() {
-		let rpc = FakeTransactionSink::default();
+		let rpc = FakeTransactionsSink::default();
 		let t = FakeTransaction::new_finalizable(1);
 
 		let t: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t);
@@ -97,7 +97,7 @@ mod test {
 
 	#[tokio::test]
 	async fn fake_sink_submit_work_droppable() {
-		let rpc = FakeTransactionSink::default();
+		let rpc = FakeTransactionsSink::default();
 		let t = FakeTransaction::new_droppable(1, 10);
 		let t: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t);
 		let r = rpc.submit(&*t).await.unwrap_err();
@@ -106,7 +106,7 @@ mod test {
 
 	#[tokio::test]
 	async fn fake_sink_submit_work_invalid() {
-		let rpc = FakeTransactionSink::default();
+		let rpc = FakeTransactionsSink::default();
 		let t = FakeTransaction::new_invalid(1, 10);
 		let t: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t);
 		let r = rpc.submit(&*t).await.unwrap_err();
@@ -115,7 +115,7 @@ mod test {
 
 	#[tokio::test]
 	async fn fake_sink_submit_work_error() {
-		let rpc = FakeTransactionSink::default();
+		let rpc = FakeTransactionsSink::default();
 		let t = FakeTransaction::new_error(1, 10);
 		let t: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t);
 		let r = rpc.submit(&*t).await.unwrap_err();
@@ -124,7 +124,7 @@ mod test {
 
 	#[tokio::test]
 	async fn fake_sink_submit_work_valid() {
-		let rpc = FakeTransactionSink::default();
+		let rpc = FakeTransactionsSink::default();
 		let t = FakeTransaction::new_finalizable_quick(111);
 		let t: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t);
 		let r = rpc.submit(&*t).await.unwrap();
@@ -135,7 +135,7 @@ mod test {
 	async fn fake_sink_submit_work_valid_2() {
 		init_logger();
 		info!("start");
-		let rpc = Arc::from(FakeTransactionSink::default());
+		let rpc = Arc::from(FakeTransactionsSink::default());
 		let t1 = FakeTransaction::new(111, vec![EventDef::finalized(11, 250)].into());
 		let t2 = FakeTransaction::new(222, vec![EventDef::finalized(12, 250)].into());
 		let t1: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t1);
