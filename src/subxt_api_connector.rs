@@ -2,7 +2,7 @@ use std::{error::Error, sync::Arc, time::Duration};
 use subxt::{backend::legacy::LegacyBackend, OnlineClient};
 use tracing::info;
 
-pub mod my_jsonrpsee_helpers {
+pub mod jsonrpsee_helpers {
 	pub use jsonrpsee::{
 		client_transport::ws::{self, EitherStream, Url, WsTransportClientBuilder},
 		core::client::{Client, Error},
@@ -40,7 +40,7 @@ pub async fn connect<C: subxt::Config>(url: &str) -> Result<OnlineClient<C>, Box
 		info!("Attempt #{}: Connecting to {}", i, url);
 		// let maybe_client = OnlineClient::<EthRuntimeConfig>::from_url(url).await;
 		let backend = LegacyBackend::builder()
-			.build(subxt::backend::rpc::RpcClient::new(my_jsonrpsee_helpers::client(url).await?));
+			.build(subxt::backend::rpc::RpcClient::new(jsonrpsee_helpers::client(url).await?));
 		let maybe_client = OnlineClient::from_backend(Arc::new(backend)).await;
 
 		// let maybe_client = OnlineClient::<EthRuntimeConfig>::from_rpc_client(client);

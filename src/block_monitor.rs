@@ -11,9 +11,11 @@ use tokio::{
 };
 use tracing::{info, trace};
 
+/// Monitors if transactions are part of finalized blocks and notifies external listeners when
+/// found.
 pub type BlockMonitorTask = Pin<Box<dyn Future<Output = ()> + Send>>;
 
-pub type TxFoundListener<H> = oneshot::Receiver<H>;
+type TxFoundListener<H> = oneshot::Receiver<H>;
 type TxFoundListenerTrigger<H> = oneshot::Sender<H>;
 type HashOf<C> = <C as subxt::Config>::Hash;
 
@@ -32,6 +34,7 @@ impl<C: subxt::Config> TransactionMonitor<HashOf<C>> for BlockMonitor<C> {
 }
 
 impl<C: subxt::Config> BlockMonitor<C> {
+	/// Instantiates a [`BlockMonitor`].
 	pub async fn new(uri: &str) -> Self {
 		trace!(uri, "BlockNumber::new");
 		let api = OnlineClient::<C>::from_insecure_url(uri)
@@ -42,7 +45,9 @@ impl<C: subxt::Config> BlockMonitor<C> {
 		Self { listener_request_tx, _p: Default::default() }
 	}
 
-	async fn register_listener(&self, h: HashOf<C>) -> TxFoundListener<HashOf<C>> {
+	/// Returns the receiving end of a channel where a notification is sent if the transaction with
+	/// the given hash is found in a finalized block.
+	pub async fn register_listener(&self, h: HashOf<C>) -> TxFoundListener<HashOf<C>> {
 		trace!(hash = ?h, "register_listener");
 		let (tx, external_listener) = oneshot::channel();
 		self.listener_request_tx.send((h, tx)).await.unwrap();
@@ -101,7 +106,7 @@ impl<C: subxt::Config> BlockMonitor<C> {
 		}
 	}
 
-	pub async fn run(
+	async fn run(
 		api: OnlineClient<C>,
 		listener_requrest_rx: mpsc::Receiver<(HashOf<C>, TxFoundListenerTrigger<HashOf<C>>)>,
 	) {

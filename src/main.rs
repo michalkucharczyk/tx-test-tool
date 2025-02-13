@@ -8,7 +8,7 @@ use txtesttool::{
 	execution_log::{journal::Journal, make_stats, STAT_TARGET},
 	fake_transaction::FakeTransaction,
 	runner::{DefaultTxTask, RunnerFactory},
-	scenario::{AccountsDescription, ScenarioExecutor},
+	scenario::{AccountsDescription, ScenarioPlanner},
 	subxt_transaction::{
 		self, generate_ecdsa_keypair, generate_sr25519_keypair, EthRuntimeConfig, EthTransaction,
 		EthTransactionsSink, SubstrateTransaction, SubstrateTransactionsSink,
@@ -42,35 +42,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 			remark,
 		} => {
 			let recipe = remark.map_or_else(TransactionRecipe::transfer, TransactionRecipe::remark);
-			let scenario_executor =
-				ScenarioExecutor::new(ws, scenario.clone(), recipe, *block_monitor).await;
+			let scenario_planner =
+				ScenarioPlanner::new(ws, scenario.clone(), recipe, *block_monitor).await;
 			match chain {
 				ChainType::Fake => {
 					let ((stop_runner_tx, mut runner), queue_task) =
-						RunnerFactory::fake_runner(scenario_executor, *send_threshold, *unwatched)
+						RunnerFactory::fake_runner(scenario_planner, *send_threshold, *unwatched)
 							.await;
 					ctrlc::set_handler(move || {
 						block_on(stop_runner_tx.send(()))
 							.expect("Could not send signal on channel.")
 					})
 					.expect("Error setting Ctrl-C handler");
-					join(queue_task, runner.run_poc2()).await;
+					join(queue_task, runner.run()).await;
 				},
 				ChainType::Eth => {
 					let ((stop_runner_tx, mut runner), queue_task) =
-						RunnerFactory::eth_runner(scenario_executor, *send_threshold, *unwatched)
+						RunnerFactory::eth_runner(scenario_planner, *send_threshold, *unwatched)
 							.await;
 					ctrlc::set_handler(move || {
 						block_on(stop_runner_tx.send(()))
 							.expect("Could not send signal on channel.")
 					})
 					.expect("Error setting Ctrl-C handler");
-					join(queue_task, runner.run_poc2()).await;
+					join(queue_task, runner.run()).await;
 				},
 				ChainType::Sub => {
 					let ((stop_runner_tx, mut runner), queue_task) =
 						RunnerFactory::substrate_runner(
-							scenario_executor,
+							scenario_planner,
 							*send_threshold,
 							*unwatched,
 						)
@@ -81,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					})
 					.expect("Error setting Ctrl-C handler");
 
-					join(queue_task, runner.run_poc2()).await;
+					join(queue_task, runner.run()).await;
 				},
 			}
 		},

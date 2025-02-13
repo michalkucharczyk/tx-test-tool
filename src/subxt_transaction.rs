@@ -166,7 +166,7 @@ where
 			from_accounts: Arc::from(RwLock::from(from_accounts)),
 			to_accounts: Arc::from(RwLock::from(to_accounts)),
 			nonces: Default::default(),
-			rpc_client: crate::subxt_api_connector::my_jsonrpsee_helpers::client(uri)
+			rpc_client: crate::subxt_api_connector::jsonrpsee_helpers::client(uri)
 				.await
 				.expect(EXPECT_CONNECT)
 				.into(),

@@ -10,7 +10,7 @@ use crate::{
 		DefaultResubmissionQueue, NeedsResubmit, ResubmissionQueue, ResubmissionQueueTask,
 		ResubmitReason,
 	},
-	scenario::ScenarioExecutor,
+	scenario::{AccountsDescription, ScenarioPlanner},
 	subxt_transaction::{
 		generate_ecdsa_keypair, generate_sr25519_keypair, EthTransaction, EthTransactionsSink,
 		SubstrateTransaction, SubstrateTransactionsSink,
@@ -35,6 +35,7 @@ use tracing::{debug, info, trace};
 
 const LOG_TARGET: &str = "runner";
 
+/// Provides a transaction execution result.
 pub enum ExecutionResult<T: TxTask> {
 	NeedsResubmit(ResubmitReason, T),
 	Error(TxTashHash<T>),
@@ -51,6 +52,7 @@ impl<T: TxTask> std::fmt::Debug for ExecutionResult<T> {
 	}
 }
 
+/// Interface for tasks that monitor transaction execution.
 #[async_trait]
 pub trait TxTask: Send + Sync + Sized + std::fmt::Debug {
 	type Transaction: Transaction + ResubmitHandler;
@@ -81,6 +83,7 @@ pub trait TxTask: Send + Sync + Sized + std::fmt::Debug {
 
 pub type TxTashHash<T> = <<T as TxTask>::Transaction as Transaction>::HashType;
 
+/// Holds the logic for a transaction submission.
 pub struct DefaultTxTask<T>
 where
 	T: Transaction,
@@ -216,6 +219,7 @@ impl<T: Transaction> DefaultTxTask<T> {
 	}
 }
 
+/// Holds the logic that handles multiple transactions execution on a specific chain.
 pub struct Runner<T: TxTask, Sink: TransactionsSink<TxTashHash<T>>, Queue: ResubmissionQueue<T>> {
 	initial_tasks: usize,
 	logs: Logs<T>,
@@ -234,6 +238,7 @@ where
 	Sink: TransactionsSink<TxTashHash<T>> + 'static,
 	TxTashHash<T>: 'static,
 {
+	/// Instantiates a new transactions [`Runner`].
 	pub fn new(
 		initial_tasks: usize,
 		rpc: Sink,
@@ -282,7 +287,7 @@ where
 		r
 	}
 
-	pub async fn consume_pending(
+	async fn consume_pending(
 		&mut self,
 		workers: &mut FuturesUnordered<Pin<Box<dyn Future<Output = ExecutionResult<T>> + Send>>>,
 		single: bool,
@@ -334,7 +339,8 @@ where
 		};
 	}
 
-	pub async fn run_poc2(&mut self) -> Logs<T> {
+	/// Drives the runner to completion.
+	pub async fn run(&mut self) -> Logs<T> {
 		let start = Instant::now();
 		let original_transactions_count = self.transactions.len();
 		let mut workers = FuturesUnordered::new();
@@ -398,7 +404,6 @@ where
 			}
 		}
 
-		// info!("logs {:#?}", self.logs);
 		Journal::<T>::save_logs(self.logs.clone());
 		info!(target: STAT_TARGET, total_duration = ?start.elapsed(), ?original_transactions_count);
 		make_stats(self.logs.values().cloned(), false);
@@ -412,7 +417,7 @@ pub struct RunnerFactory;
 impl RunnerFactory {
 	/// Returns a runner of transactions for the [`ChainType::Sub`].
 	pub async fn substrate_runner(
-		scenario_executor: ScenarioExecutor,
+		scenario_planner: ScenarioPlanner,
 		send_threshold: u32,
 		unwatched: bool,
 	) -> (
@@ -426,20 +431,23 @@ impl RunnerFactory {
 		),
 		ResubmissionQueueTask,
 	) {
-		let def = scenario_executor.scenario.get_accounts_description();
+		let def = AccountsDescription::from(&scenario_planner.scenario);
 		let builder = SubstrateTransactionBuilder::default();
 		let sink = SubstrateTransactionsSink::new_with_uri_with_accounts_description(
-			scenario_executor.ws.as_str(),
+			scenario_planner.ws.as_str(),
 			def,
 			generate_sr25519_keypair,
-			if scenario_executor.block_monitor {
-				Some(BlockMonitor::new(scenario_executor.ws.as_str()).await)
+			if scenario_planner.has_block_monitor {
+				Some(BlockMonitor::new(scenario_planner.ws.as_str()).await)
 			} else {
 				None
 			},
 		)
 		.await;
-		let txs = scenario_executor.generate_transactions(builder, sink.clone(), unwatched).await;
+		let tx_build_params = scenario_planner.scenario.as_tx_build_params();
+		let txs = scenario_planner
+			.build_transactions(builder, sink.clone(), tx_build_params, unwatched)
+			.await;
 		let (queue, queue_task) = DefaultResubmissionQueue::new();
 		(
 			Runner::<
@@ -453,7 +461,7 @@ impl RunnerFactory {
 
 	/// Returns a runner of transactions for the [`ChainType::Eth`].
 	pub async fn eth_runner(
-		scenario_executor: ScenarioExecutor,
+		scenario_planner: ScenarioPlanner,
 		send_threshold: u32,
 		unwatched: bool,
 	) -> (
@@ -467,20 +475,23 @@ impl RunnerFactory {
 		),
 		ResubmissionQueueTask,
 	) {
-		let def = scenario_executor.scenario.get_accounts_description();
+		let def = AccountsDescription::from(&scenario_planner.scenario);
 		let builder = EthTransactionBuilder::default();
 		let sink = EthTransactionsSink::new_with_uri_with_accounts_description(
-			scenario_executor.ws.as_str(),
+			scenario_planner.ws.as_str(),
 			def,
 			generate_ecdsa_keypair,
-			if scenario_executor.block_monitor {
-				Some(BlockMonitor::new(scenario_executor.ws.as_str()).await)
+			if scenario_planner.has_block_monitor {
+				Some(BlockMonitor::new(scenario_planner.ws.as_str()).await)
 			} else {
 				None
 			},
 		)
 		.await;
-		let txs = scenario_executor.generate_transactions(builder, sink.clone(), unwatched).await;
+		let tx_build_params = scenario_planner.scenario.as_tx_build_params();
+		let txs = scenario_planner
+			.build_transactions(builder, sink.clone(), tx_build_params, unwatched)
+			.await;
 		let (queue, queue_task) = DefaultResubmissionQueue::new();
 		(
 			Runner::<
@@ -494,7 +505,7 @@ impl RunnerFactory {
 
 	/// Returns a runner of transactions for the [`ChainType::Fake`].
 	pub async fn fake_runner(
-		scenario_executor: ScenarioExecutor,
+		scenario_planner: ScenarioPlanner,
 		send_threshold: u32,
 		unwatched: bool,
 	) -> (
@@ -510,7 +521,10 @@ impl RunnerFactory {
 	) {
 		let builder = FakeTransactionBuilder::default();
 		let sink = FakeTransactionsSink::default();
-		let txs = scenario_executor.generate_transactions(builder, sink.clone(), unwatched).await;
+		let tx_build_params = scenario_planner.scenario.as_tx_build_params();
+		let txs = scenario_planner
+			.build_transactions(builder, sink.clone(), tx_build_params, unwatched)
+			.await;
 		let (queue, queue_task) = DefaultResubmissionQueue::new();
 		(
 			Runner::<
@@ -566,7 +580,7 @@ mod tests {
 			FakeTransactionsSink,
 			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
 		>::new(5, rpc, transactions, queue);
-		join(queue_task, r.run_poc2()).await;
+		join(queue_task, r.run()).await;
 	}
 
 	type EthTestTxTask = DefaultTxTask<EthTransaction>;
@@ -632,7 +646,7 @@ mod tests {
 			EthTransactionsSink,
 			DefaultResubmissionQueue<DefaultTxTask<EthTransaction>>,
 		>::new(10_000, rpc, transactions, queue);
-		join(queue_task, r.run_poc2()).await;
+		join(queue_task, r.run()).await;
 	}
 
 	#[tokio::test]
@@ -653,7 +667,7 @@ mod tests {
 			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
 		>::new(100000, rpc, transactions, queue);
 
-		join(queue_task, r.run_poc2()).await;
+		join(queue_task, r.run()).await;
 	}
 
 	#[tokio::test]
