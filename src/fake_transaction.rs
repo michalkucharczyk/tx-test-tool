@@ -1,6 +1,7 @@
 use crate::{
 	error::Error,
-	transaction::{AccountMetadata, ResubmitHandler, StreamOf, Transaction, TransactionStatus},
+	helpers::StreamOf,
+	transaction::{AccountMetadata, ResubmitHandler, Transaction, TransactionStatus},
 };
 use futures::stream::{self};
 use futures_util::StreamExt;

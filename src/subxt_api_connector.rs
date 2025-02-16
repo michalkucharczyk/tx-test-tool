@@ -2,45 +2,21 @@ use std::{error::Error, sync::Arc, time::Duration};
 use subxt::{backend::legacy::LegacyBackend, OnlineClient};
 use tracing::info;
 
-pub mod jsonrpsee_helpers {
-	pub use jsonrpsee::{
-		client_transport::ws::{self, EitherStream, Url, WsTransportClientBuilder},
-		core::client::{Client, Error},
-	};
-	use tokio_util::compat::Compat;
+use crate::helpers;
 
-	pub type Sender = ws::Sender<Compat<EitherStream>>;
-	pub type Receiver = ws::Receiver<Compat<EitherStream>>;
-
-	/// Build WS RPC client from URL
-	pub async fn client(url: &str) -> Result<Client, Error> {
-		let (sender, receiver) = ws_transport(url).await?;
-		Ok(Client::builder()
-			.max_buffer_capacity_per_subscription(4096)
-			.max_concurrent_requests(128000)
-			.build_with_tokio(sender, receiver))
-	}
-
-	async fn ws_transport(url: &str) -> Result<(Sender, Receiver), Error> {
-		let url = Url::parse(url).map_err(|e| Error::Transport(e.into()))?;
-		WsTransportClientBuilder::default()
-			.max_request_size(400 * 1024 * 1024)
-			.max_response_size(400 * 1024 * 1024)
-			.build(url)
-			.await
-			.map_err(|e| Error::Transport(e.into()))
-	}
-}
-/// Maximal number of connection attempts.
 const MAX_ATTEMPTS: usize = 10;
 /// Delay period between failed connection attempts.
 const RETRY_DELAY: Duration = Duration::from_secs(1);
-pub async fn connect<C: subxt::Config>(url: &str) -> Result<OnlineClient<C>, Box<dyn Error>> {
+
+/// Connect to a RPC node.
+pub(crate) async fn connect<C: subxt::Config>(
+	url: &str,
+) -> Result<OnlineClient<C>, Box<dyn Error>> {
 	for i in 0..MAX_ATTEMPTS {
 		info!("Attempt #{}: Connecting to {}", i, url);
 		// let maybe_client = OnlineClient::<EthRuntimeConfig>::from_url(url).await;
 		let backend = LegacyBackend::builder()
-			.build(subxt::backend::rpc::RpcClient::new(jsonrpsee_helpers::client(url).await?));
+			.build(subxt::backend::rpc::RpcClient::new(helpers::client(url).await?));
 		let maybe_client = OnlineClient::from_backend(Arc::new(backend)).await;
 
 		// let maybe_client = OnlineClient::<EthRuntimeConfig>::from_rpc_client(client);

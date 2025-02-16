@@ -1,6 +1,6 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 
-use crate::scenario::SendingScenario;
+use crate::scenario::{ChainType, ScenarioType};
 
 #[derive(Parser)]
 #[clap(name = "txtt")]
@@ -40,7 +40,7 @@ pub enum CliCommand {
 		remark: Option<u32>,
 		/// Accounts range used for building/seding transactions.
 		#[clap(subcommand)]
-		scenario: SendingScenario,
+		scenario: ScenarioType,
 	},
 	/// Check nonce for given account.
 	CheckNonce {
@@ -107,14 +107,4 @@ pub enum CliCommand {
 		#[clap(long)]
 		chain_spec: Option<String>,
 	},
-}
-
-#[derive(ValueEnum, Clone)]
-pub enum ChainType {
-	/// Substrate compatible chain.
-	Sub,
-	/// Etheruem compatible chain.
-	Eth,
-	/// Do not send transactions anywhere, just for dev/testing.
-	Fake,
 }

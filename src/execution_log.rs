@@ -1,6 +1,6 @@
 use crate::{
 	error::Error,
-	runner::{TxTashHash, TxTask},
+	runner::{TxTask, TxTaskHash},
 	transaction::{AccountMetadata, Transaction, TransactionStatus},
 };
 use average::{Estimate, Max, Mean, Min, Quantile};
@@ -140,6 +140,10 @@ impl Counters {
 	}
 }
 
+/// Type alias for a dictionary of execution logs.
+pub type Logs<T> = HashMap<TxTaskHash<T>, Arc<DefaultExecutionLog<TxTaskHash<T>>>>;
+
+/// Interface for log recording.
 pub trait ExecutionLog: Sync + Send {
 	type HashType: BlockHash;
 
@@ -179,6 +183,7 @@ pub trait ExecutionLog: Sync + Send {
 }
 
 #[derive(Debug)]
+/// A default implementation of an execution log.
 pub struct DefaultExecutionLog<H: BlockHash> {
 	events: RwLock<Vec<ExecutionEvent<H>>>,
 	account_metadata: AccountMetadata,
@@ -186,8 +191,6 @@ pub struct DefaultExecutionLog<H: BlockHash> {
 	hash: H,
 	total_counters: Arc<Counters>,
 }
-
-pub type Logs<T> = HashMap<TxTashHash<T>, Arc<DefaultExecutionLog<TxTashHash<T>>>>;
 
 impl<H: BlockHash + Default> Default for DefaultExecutionLog<H> {
 	fn default() -> Self {
@@ -552,6 +555,7 @@ pub fn make_stats<E: ExecutionLog>(logs: impl IntoIterator<Item = Arc<E>>, show_
 }
 
 pub mod journal {
+
 	use super::*;
 	pub struct Journal<T: TxTask> {
 		_p: PhantomData<T>,
@@ -593,7 +597,7 @@ pub mod journal {
 
 	impl<T: TxTask> Journal<T>
 	where
-		TxTashHash<T>: 'static,
+		TxTaskHash<T>: 'static,
 	{
 		pub fn save_logs(logs: Logs<T>) {
 			let data = logs.into_iter().map(|(h, l)| (h, l.get_data())).collect::<HashMap<_, _>>();
@@ -611,7 +615,7 @@ pub mod journal {
 			file.read_to_string(&mut json).expect("Unable to read file");
 
 			// Deserialize the JSON data into the desired type
-			let data: HashMap<TxTashHash<T>, DefaultExecutionLogSerdeHelper<TxTashHash<T>>> =
+			let data: HashMap<TxTaskHash<T>, DefaultExecutionLogSerdeHelper<TxTaskHash<T>>> =
 				serde_json::from_str(&json).expect("Unable to deserialize JSON");
 
 			data.into_iter()

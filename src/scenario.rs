@@ -1,12 +1,23 @@
-use std::{ops::Range, sync::Arc};
+use std::{collections::HashMap, ops::Range, sync::Arc};
 
-use clap::Subcommand;
-use subxt::config::BlockHash;
+use clap::{Subcommand, ValueEnum};
+use futures::executor::block_on;
+use subxt::{config::BlockHash, utils::H256};
+use tokio::sync::mpsc::Sender;
 
 use crate::{
-	runner::{DefaultTxTask, TxTask},
-	transaction::{ResubmitHandler, Transaction, TransactionRecipe, TransactionsSink},
-	TransactionBuilder,
+	block_monitor::BlockMonitor,
+	execution_log::DefaultExecutionLog,
+	resubmission::{DefaultResubmissionQueue, ResubmissionQueueTask},
+	runner::{DefaultTxTask, Runner, TxTask},
+	subxt_transaction::{
+		generate_ecdsa_keypair, generate_sr25519_keypair, EthTransaction, EthTransactionsSink,
+		SubstrateTransaction, SubstrateTransactionsSink,
+	},
+	transaction::{
+		EthTransactionBuilder, ResubmitHandler, SubstrateTransactionBuilder, Transaction,
+		TransactionBuilder, TransactionRecipe, TransactionsSink,
+	},
 };
 
 #[derive(Clone, Debug)]
@@ -24,9 +35,19 @@ pub enum AccountsDescription {
 	Derived(Range<u32>),
 }
 
+#[derive(ValueEnum, Clone)]
+pub enum ChainType {
+	/// Substrate compatible chain.
+	Sub,
+	/// Etheruem compatible chain.
+	Eth,
+	/// A fake chain used for experiments & tests.
+	Fake,
+}
+
 #[derive(Subcommand, Clone)]
 /// Send transactions to the node using different scenarios.
-pub enum SendingScenario {
+pub enum ScenarioType {
 	/// Send single transactions to the node.
 	OneShot {
 		/// Account identifier to be used. It can be keyring account (alice, bob,...) or number of
@@ -70,18 +91,18 @@ pub enum SendingScenario {
 	},
 }
 
-impl From<&SendingScenario> for AccountsDescription {
-	fn from(value: &SendingScenario) -> Self {
+impl From<&ScenarioType> for AccountsDescription {
+	fn from(value: &ScenarioType) -> Self {
 		match value {
-			SendingScenario::OneShot { account, .. } =>
+			ScenarioType::OneShot { account, .. } =>
 				if let Ok(id) = account.parse::<u32>() {
 					AccountsDescription::Derived(id..id + 1)
 				} else {
 					AccountsDescription::Keyring(account.clone())
 				},
-			SendingScenario::FromManyAccounts { start_id, last_id, .. } =>
+			ScenarioType::FromManyAccounts { start_id, last_id, .. } =>
 				AccountsDescription::Derived(*start_id..last_id + 1),
-			SendingScenario::FromSingleAccount { account, .. } =>
+			ScenarioType::FromSingleAccount { account, .. } =>
 				if let Ok(id) = account.parse::<u32>() {
 					AccountsDescription::Derived(id..id + 1)
 				} else {
@@ -91,13 +112,13 @@ impl From<&SendingScenario> for AccountsDescription {
 	}
 }
 
-impl SendingScenario {
+impl ScenarioType {
 	pub(crate) fn as_tx_build_params(&self) -> Vec<TransactionBuildParams> {
 		match self {
-			SendingScenario::OneShot { account, nonce } => {
+			ScenarioType::OneShot { account, nonce } => {
 				vec![TransactionBuildParams { account: account.clone(), nonce: *nonce }]
 			},
-			SendingScenario::FromSingleAccount { account, mut from, count } => {
+			ScenarioType::FromSingleAccount { account, mut from, count } => {
 				let mut tx_build_params = vec![];
 				for _ in 0..*count {
 					tx_build_params
@@ -106,7 +127,7 @@ impl SendingScenario {
 				}
 				tx_build_params
 			},
-			SendingScenario::FromManyAccounts { start_id, last_id, from, count } => {
+			ScenarioType::FromManyAccounts { start_id, last_id, from, count } => {
 				let mut tx_build_params = vec![];
 				for account in *start_id..=*last_id {
 					let mut nonce = from.clone();
@@ -122,32 +143,154 @@ impl SendingScenario {
 	}
 }
 
-/// Plans the execution of generated transactions, based on a [`SendingScenario`]
-/// and transaction recipe.
-pub struct ScenarioPlanner {
-	pub scenario: SendingScenario,
-	pub recipe: TransactionRecipe,
-	pub has_block_monitor: bool,
-	pub ws: String,
+pub(crate) type EthScenarioRunner = Runner<
+	DefaultTxTask<EthTransaction>,
+	EthTransactionsSink,
+	DefaultResubmissionQueue<DefaultTxTask<EthTransaction>>,
+>;
+pub(crate) struct EthScenarioExecutor {
+	stop_sender: Sender<()>,
+	runner: EthScenarioRunner,
+	resubmission_queue: ResubmissionQueueTask,
 }
 
-impl ScenarioPlanner {
-	pub async fn new(
-		ws: &str,
-		scenario: SendingScenario,
-		recipe: TransactionRecipe,
-		block_monitor: bool,
+pub(crate) type SubstrateScenarioRunner = Runner<
+	DefaultTxTask<SubstrateTransaction>,
+	SubstrateTransactionsSink,
+	DefaultResubmissionQueue<DefaultTxTask<SubstrateTransaction>>,
+>;
+pub(crate) struct SubstrateScenarioExecutor {
+	stop_sender: Sender<()>,
+	runner: SubstrateScenarioRunner,
+	resubmission_queue: ResubmissionQueueTask,
+}
+
+impl SubstrateScenarioExecutor {
+	pub(crate) fn new(
+		stop_sender: Sender<()>,
+		runner: SubstrateScenarioRunner,
+		resubmission_queue: ResubmissionQueueTask,
 	) -> Self {
-		Self { scenario, recipe, has_block_monitor: block_monitor, ws: ws.to_string() }
+		SubstrateScenarioExecutor { stop_sender, runner, resubmission_queue }
+	}
+}
+
+impl EthScenarioExecutor {
+	pub fn new(
+		stop_sender: Sender<()>,
+		runner: EthScenarioRunner,
+		resubmission_queue: ResubmissionQueueTask,
+	) -> Self {
+		EthScenarioExecutor { stop_sender, runner, resubmission_queue }
+	}
+}
+
+/// Multi-chain scenario executor.
+pub enum ScenarioExecutor {
+	Eth(EthScenarioExecutor),
+	Substrate(SubstrateScenarioExecutor),
+}
+
+impl ScenarioExecutor {
+	pub async fn execute_txs<T: TxTask + 'static>(
+		self,
+	) -> HashMap<H256, Arc<DefaultExecutionLog<H256>>> {
+		match self {
+			ScenarioExecutor::Eth(mut inner) => {
+				let (_, logs) =
+					futures::future::join(inner.resubmission_queue, inner.runner.run()).await;
+				logs
+			},
+			ScenarioExecutor::Substrate(mut inner) => {
+				let (_, logs) =
+					futures::future::join(inner.resubmission_queue, inner.runner.run()).await;
+				logs
+			},
+		}
+	}
+
+	/// Installs a ctrl_c handler which sends a stop notification on the executor
+	/// stop sender channel, to notify the stop of the scenario for displaying partial stats about
+	/// the transactions execution.
+	///
+	/// Can be called only once for the lifetime of a the program execution.
+	fn install_ctrlc_stop_hook(&self) {
+		let stop_sender = match &self {
+			ScenarioExecutor::Eth(inner) => inner.stop_sender.clone(),
+			ScenarioExecutor::Substrate(inner) => inner.stop_sender.clone(),
+		};
+		ctrlc::set_handler(move || {
+			block_on(stop_sender.send(())).expect("Could not send signal on channel.")
+		})
+		.expect("Error setting Ctrl-C handler");
+	}
+}
+/// Building logic for the execution of a scenario.
+#[derive(Default)]
+pub struct ScenarioBuilder {
+	scenario_type: Option<ScenarioType>,
+	tx_recipe: Option<TransactionRecipe>,
+	does_block_monitoring: bool,
+	watched_txs: bool,
+	send_threshold: Option<usize>,
+	rpc_uri: Option<String>,
+	chain_type: Option<ChainType>,
+	installs_ctrl_c_stop_hook: bool,
+}
+
+impl ScenarioBuilder {
+	pub fn with_scenario_type(mut self, scenario_type: ScenarioType) -> Self {
+		self.scenario_type = Some(scenario_type);
+		self
+	}
+
+	pub fn with_transfer_tx_recipe(mut self) -> Self {
+		self.tx_recipe = Some(TransactionRecipe::transfer());
+		self
+	}
+
+	pub fn with_remark_tx_recipe(mut self, remark: u32) -> Self {
+		self.tx_recipe = Some(TransactionRecipe::remark(remark));
+		self
+	}
+
+	pub fn with_block_monitoring(mut self) -> Self {
+		self.does_block_monitoring = true;
+		self
+	}
+
+	pub fn with_rpc_uri(mut self, rpc_uri: String) -> Self {
+		self.rpc_uri = Some(rpc_uri);
+		self
+	}
+
+	pub fn with_watched_txs(mut self) -> Self {
+		self.watched_txs = true;
+		self
+	}
+
+	pub fn with_chain_type(mut self, chain_type: ChainType) -> Self {
+		self.chain_type = Some(chain_type);
+		self
+	}
+
+	pub fn with_send_threshold(mut self, send_threshold: usize) -> Self {
+		self.send_threshold = Some(send_threshold);
+		self
+	}
+
+	pub fn with_installed_ctrlc_stop_hook(mut self, installs_ctrl_c_stop_hook: bool) -> Self {
+		self.installs_ctrl_c_stop_hook = installs_ctrl_c_stop_hook;
+		self
 	}
 
 	/// Returns a set of tasks that handle transaction execution.
-	pub(crate) async fn build_transactions<H, T, S, B>(
+	async fn build_transactions<H, T, S, B>(
 		&self,
 		builder: B,
 		sink: S,
 		tx_build_params: Vec<TransactionBuildParams>,
-		unwatched: bool,
+		watched: bool,
 	) -> Vec<DefaultTxTask<T>>
 	where
 		H: BlockHash + 'static,
@@ -169,7 +312,10 @@ impl ScenarioPlanner {
 			let tx_build_params = tx_build_params.clone();
 			let builder = builder.clone();
 			let sink = sink.clone();
-			let recipe = self.recipe.clone();
+			let recipe = self
+				.tx_recipe
+				.clone()
+				.expect("to be configured with a transaction recipe. qed.");
 			threads.push(tokio::task::spawn(async move {
 				let mut txs = vec![];
 				for i in chunk {
@@ -180,7 +326,7 @@ impl ScenarioPlanner {
 								&build_params.account,
 								&build_params.nonce,
 								&sink,
-								unwatched,
+								watched,
 								&recipe,
 							)
 							.await,
@@ -199,24 +345,104 @@ impl ScenarioPlanner {
 		txs.sort_by_key(|k| k.tx().nonce());
 		txs
 	}
+
+	/// Returns a runner of transactions for the configured scenario.
+	pub async fn build(self) -> ScenarioExecutor {
+		let scenario_type =
+			self.scenario_type.clone().expect("to have a configured scenario type. qed.");
+		let does_block_monitoring = self.does_block_monitoring;
+		let watched_txs = self.watched_txs;
+		let send_threshold =
+			self.send_threshold.expect("to have configured the send threshold. qed.");
+		let rpc_uri = self.rpc_uri.clone().expect("to have configured the rpc uri. qed.");
+		let chain_type = self.chain_type.clone().expect("to have a configured chain type. qed");
+		let accounts_description = AccountsDescription::from(&scenario_type);
+		let installs_ctrlc_stop_hook = self.installs_ctrl_c_stop_hook;
+		match chain_type {
+			ChainType::Eth => {
+				let builder = EthTransactionBuilder::default();
+				let new_with_uri_with_accounts_description =
+					EthTransactionsSink::new_with_uri_with_accounts_description(
+						rpc_uri.as_str(),
+						accounts_description,
+						generate_ecdsa_keypair,
+						if does_block_monitoring {
+							Some(BlockMonitor::new(rpc_uri.as_str()).await)
+						} else {
+							None
+						},
+					);
+				let sink = new_with_uri_with_accounts_description.await;
+				let tx_build_params = scenario_type.as_tx_build_params();
+				let txs = self
+					.build_transactions(builder, sink.clone(), tx_build_params, watched_txs)
+					.await;
+				let (queue, queue_task) = DefaultResubmissionQueue::new();
+				let (stop_sender, runner) =
+					Runner::<
+						DefaultTxTask<EthTransaction>,
+						EthTransactionsSink,
+						DefaultResubmissionQueue<DefaultTxTask<EthTransaction>>,
+					>::new(send_threshold as usize, sink, txs.into_iter().rev().collect(), queue);
+				let executor = ScenarioExecutor::Eth(EthScenarioExecutor::new(
+					stop_sender,
+					runner,
+					queue_task,
+				));
+				installs_ctrlc_stop_hook.then(|| executor.install_ctrlc_stop_hook());
+				executor
+			},
+			ChainType::Sub => {
+				let builder = SubstrateTransactionBuilder::default();
+				let sink = SubstrateTransactionsSink::new_with_uri_with_accounts_description(
+					rpc_uri.as_str(),
+					accounts_description,
+					generate_sr25519_keypair,
+					if does_block_monitoring {
+						Some(BlockMonitor::new(rpc_uri.as_str()).await)
+					} else {
+						None
+					},
+				)
+				.await;
+				let tx_build_params = scenario_type.as_tx_build_params();
+				let txs = self
+					.build_transactions(builder, sink.clone(), tx_build_params, watched_txs)
+					.await;
+				let (queue, queue_task) = DefaultResubmissionQueue::new();
+				let (stop_sender, runner) =
+					Runner::<
+						DefaultTxTask<SubstrateTransaction>,
+						SubstrateTransactionsSink,
+						DefaultResubmissionQueue<DefaultTxTask<SubstrateTransaction>>,
+					>::new(send_threshold, sink, txs.into_iter().rev().collect(), queue);
+
+				let executor = ScenarioExecutor::Substrate(SubstrateScenarioExecutor::new(
+					stop_sender,
+					runner,
+					queue_task,
+				));
+				installs_ctrlc_stop_hook.then(|| executor.install_ctrlc_stop_hook());
+				executor
+			},
+			ChainType::Fake => todo!(),
+		}
+	}
 }
 
 #[cfg(test)]
 mod tests {
-	use super::SendingScenario;
+	use super::ScenarioType;
 	#[test]
 	fn sending_scenario_as_tx_build_params() {
-		let scenario = SendingScenario::OneShot { account: "0".to_string(), nonce: Some(0) };
+		let scenario = ScenarioType::OneShot { account: "0".to_string(), nonce: Some(0) };
 		let tx_build_params = scenario.as_tx_build_params();
 		assert_eq!(tx_build_params.len(), 1);
 		assert_eq!(tx_build_params[0].account, "0".to_string());
 		assert_eq!(tx_build_params[0].nonce, Some(0));
 
-		let scenario = SendingScenario::FromSingleAccount {
-			account: "0".to_string(),
-			from: Some(0),
-			count: 10,
-		};
+		let scenario =
+			ScenarioType::FromSingleAccount { account: "0".to_string(), from: Some(0), count: 10 };
 		let tx_build_params = scenario.as_tx_build_params();
 		assert_eq!(tx_build_params.len(), 10);
 		for (i, params) in tx_build_params.iter().enumerate() {
@@ -224,12 +450,8 @@ mod tests {
 			assert_eq!(params.nonce, Some(i as u128));
 		}
 
-		let scenario = SendingScenario::FromManyAccounts {
-			start_id: 0,
-			last_id: 10,
-			from: Some(0),
-			count: 100,
-		};
+		let scenario =
+			ScenarioType::FromManyAccounts { start_id: 0, last_id: 10, from: Some(0), count: 100 };
 		let tx_build_params = scenario.as_tx_build_params();
 		assert_eq!(tx_build_params.len(), 1100);
 		for (nonce, params) in tx_build_params.iter().enumerate() {

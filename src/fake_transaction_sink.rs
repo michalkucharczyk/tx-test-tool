@@ -1,8 +1,9 @@
 use crate::{
 	error::Error,
 	fake_transaction::{FakeHash, FakeTransaction},
+	helpers::StreamOf,
 	transaction::{
-		StreamOf, Transaction, TransactionMonitor, TransactionStatus, TransactionStatusIsTerminal,
+		Transaction, TransactionMonitor, TransactionStatus, TransactionStatusIsDone,
 		TransactionsSink,
 	},
 };

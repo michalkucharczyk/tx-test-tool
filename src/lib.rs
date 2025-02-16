@@ -43,28 +43,13 @@
 //!  }
 //!  ```
 
-use crate::transaction::Transaction;
-
-use crate::{
-	fake_transaction::{FakeHash, FakeTransaction},
-	fake_transaction_sink::FakeTransactionsSink,
-	runner::DefaultTxTask,
-	subxt_transaction::{
-		build_eth_tx_payload, build_substrate_tx_payload, build_subxt_tx, EthRuntimeConfig,
-		EthTransaction, EthTransactionsSink, HashOf, SubstrateTransaction,
-		SubstrateTransactionsSink,
-	},
-	transaction::{TransactionRecipe, TransactionsSink},
-};
-use async_trait::async_trait;
-use subxt::{config::BlockHash, PolkadotConfig};
-
 pub mod block_monitor;
 pub mod cli;
 pub mod error;
 pub mod execution_log;
 pub mod fake_transaction;
 pub mod fake_transaction_sink;
+pub mod helpers;
 pub mod resubmission;
 pub mod runner;
 pub mod scenario;
@@ -72,6 +57,7 @@ pub mod subxt_api_connector;
 pub mod subxt_transaction;
 pub mod transaction;
 
+/// Initialize the logger for various binaries (e.g. ttxt or test binaries).
 pub fn init_logger() {
 	use std::sync::Once;
 	static INIT: Once = Once::new();
@@ -113,116 +99,4 @@ pub fn init_logger() {
 		tracing::subscriber::set_global_default(subscriber)
 			.expect("Unable to set a global subscriber");
 	});
-}
-
-#[async_trait]
-pub trait TransactionBuilder {
-	type HashType: BlockHash;
-	type Transaction: Transaction<HashType = Self::HashType>;
-	type Sink: TransactionsSink<Self::HashType>;
-
-	async fn build_transaction<'a>(
-		&self,
-		account: &'a str,
-		nonce: &Option<u128>,
-		sink: &Self::Sink,
-		unwatched: bool,
-		recipe: &TransactionRecipe,
-	) -> DefaultTxTask<Self::Transaction>;
-}
-
-#[derive(Default)]
-pub struct FakeTransactionBuilder {}
-
-#[async_trait]
-impl TransactionBuilder for FakeTransactionBuilder {
-	type HashType = FakeHash;
-	type Transaction = FakeTransaction;
-	type Sink = FakeTransactionsSink;
-	async fn build_transaction<'a>(
-		&self,
-		account: &'a str,
-		_nonce: &Option<u128>,
-		sink: &Self::Sink,
-		unwatched: bool,
-		_recipe: &TransactionRecipe,
-	) -> DefaultTxTask<Self::Transaction> {
-		if unwatched {
-			todo!()
-		};
-		let mut nonces = sink.nonces.write();
-		let nonce = if let Some(nonce) = nonces.get_mut(&hex::encode(account)) {
-			*nonce += 1;
-			*nonce
-		} else {
-			nonces.insert(hex::encode(account), 0);
-			0
-		};
-		let i = account.parse::<u32>().expect("Account shall be valid integer");
-		// DefaultTxTask::<FakeTransaction>::new_watched(FakeTransaction::new_droppable_loop(
-		// 	i + (nonce << 16) as u32,
-		// 	200,
-		// ))
-		DefaultTxTask::<FakeTransaction>::new_watched(FakeTransaction::new_droppable_2nd_success(
-			i + (nonce << 16) as u32,
-			1000,
-		))
-		// FakeTransaction::new_droppable_2nd_success(i, 0)
-	}
-}
-
-#[derive(Default)]
-pub struct SubstrateTransactionBuilder {}
-
-#[async_trait]
-impl TransactionBuilder for SubstrateTransactionBuilder {
-	type HashType = HashOf<PolkadotConfig>;
-	type Transaction = SubstrateTransaction;
-	type Sink = SubstrateTransactionsSink;
-	async fn build_transaction<'a>(
-		&self,
-		account: &'a str,
-		nonce: &Option<u128>,
-		sink: &Self::Sink,
-		unwatched: bool,
-		recipe: &TransactionRecipe,
-	) -> DefaultTxTask<Self::Transaction> {
-		if unwatched {
-			DefaultTxTask::<Self::Transaction>::new_unwatched(
-				build_subxt_tx(account, nonce, sink, recipe, build_substrate_tx_payload).await,
-			)
-		} else {
-			DefaultTxTask::<Self::Transaction>::new_watched(
-				build_subxt_tx(account, nonce, sink, recipe, build_substrate_tx_payload).await,
-			)
-		}
-	}
-}
-
-#[derive(Default)]
-pub struct EthTransactionBuilder {}
-
-#[async_trait]
-impl TransactionBuilder for EthTransactionBuilder {
-	type HashType = HashOf<EthRuntimeConfig>;
-	type Transaction = EthTransaction;
-	type Sink = EthTransactionsSink;
-	async fn build_transaction<'a>(
-		&self,
-		account: &'a str,
-		nonce: &Option<u128>,
-		sink: &Self::Sink,
-		unwatched: bool,
-		recipe: &TransactionRecipe,
-	) -> DefaultTxTask<Self::Transaction> {
-		if unwatched {
-			DefaultTxTask::<Self::Transaction>::new_unwatched(
-				build_subxt_tx(account, nonce, sink, recipe, build_eth_tx_payload).await,
-			)
-		} else {
-			DefaultTxTask::<Self::Transaction>::new_watched(
-				build_subxt_tx(account, nonce, sink, recipe, build_eth_tx_payload).await,
-			)
-		}
-	}
 }

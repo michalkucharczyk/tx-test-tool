@@ -1,19 +1,17 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
-use futures::{executor::block_on, future::join};
 use txtesttool::{
 	block_monitor::BlockMonitor,
-	cli::{ChainType, Cli, CliCommand},
+	cli::{Cli, CliCommand},
 	execution_log::{journal::Journal, make_stats, STAT_TARGET},
 	fake_transaction::FakeTransaction,
-	runner::{DefaultTxTask, RunnerFactory},
-	scenario::{AccountsDescription, ScenarioPlanner},
+	runner::DefaultTxTask,
+	scenario::{AccountsDescription, ChainType, ScenarioBuilder},
 	subxt_transaction::{
 		self, generate_ecdsa_keypair, generate_sr25519_keypair, EthRuntimeConfig, EthTransaction,
-		EthTransactionsSink, SubstrateTransaction, SubstrateTransactionsSink,
+		EthTransactionsSink, SubstrateTransaction, SubstrateTransactionsSink, SENDER_SEED,
 	},
-	transaction::TransactionRecipe,
 };
 
 use clap::Parser;
@@ -40,50 +38,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 			scenario,
 			send_threshold,
 			remark,
-		} => {
-			let recipe = remark.map_or_else(TransactionRecipe::transfer, TransactionRecipe::remark);
-			let scenario_planner =
-				ScenarioPlanner::new(ws, scenario.clone(), recipe, *block_monitor).await;
-			match chain {
-				ChainType::Fake => {
-					let ((stop_runner_tx, mut runner), queue_task) =
-						RunnerFactory::fake_runner(scenario_planner, *send_threshold, *unwatched)
-							.await;
-					ctrlc::set_handler(move || {
-						block_on(stop_runner_tx.send(()))
-							.expect("Could not send signal on channel.")
-					})
-					.expect("Error setting Ctrl-C handler");
-					join(queue_task, runner.run()).await;
-				},
-				ChainType::Eth => {
-					let ((stop_runner_tx, mut runner), queue_task) =
-						RunnerFactory::eth_runner(scenario_planner, *send_threshold, *unwatched)
-							.await;
-					ctrlc::set_handler(move || {
-						block_on(stop_runner_tx.send(()))
-							.expect("Could not send signal on channel.")
-					})
-					.expect("Error setting Ctrl-C handler");
-					join(queue_task, runner.run()).await;
-				},
-				ChainType::Sub => {
-					let ((stop_runner_tx, mut runner), queue_task) =
-						RunnerFactory::substrate_runner(
-							scenario_planner,
-							*send_threshold,
-							*unwatched,
-						)
-						.await;
-					ctrlc::set_handler(move || {
-						block_on(stop_runner_tx.send(()))
-							.expect("Could not send signal on channel.")
-					})
-					.expect("Error setting Ctrl-C handler");
+		} => match chain {
+			ChainType::Fake => {
+				unimplemented!()
+			},
+			ChainType::Eth => {
+				let mut scenario_builder = ScenarioBuilder::default()
+					.with_rpc_uri(ws.to_string())
+					.with_scenario_type(scenario.clone())
+					.with_block_monitoring()
+					.with_chain_type(chain.clone())
+					.with_send_threshold(*send_threshold as usize);
 
-					join(queue_task, runner.run()).await;
-				},
-			}
+				if !unwatched {
+					scenario_builder = scenario_builder.with_watched_txs();
+				}
+
+				if let Some(inner) = remark {
+					scenario_builder = scenario_builder.with_remark_tx_recipe(*inner);
+				}
+
+				let scenario_executor = scenario_builder.build().await;
+				let _ =
+					scenario_executor.execute_txs::<DefaultTxTask<SubstrateTransaction>>().await;
+			},
+			ChainType::Sub => {
+				let mut scenario_builder = ScenarioBuilder::default()
+					.with_rpc_uri(ws.to_string())
+					.with_scenario_type(scenario.clone())
+					.with_block_monitoring()
+					.with_chain_type(chain.clone())
+					.with_send_threshold(*send_threshold as usize);
+
+				if !unwatched {
+					scenario_builder = scenario_builder.with_watched_txs();
+				}
+
+				if let Some(inner) = remark {
+					scenario_builder = scenario_builder.with_remark_tx_recipe(*inner);
+				}
+
+				let scenario_executor = scenario_builder.build().await;
+				let _ = scenario_executor.execute_txs::<DefaultTxTask<EthTransaction>>().await;
+			},
 		},
 		CliCommand::CheckNonce { chain, ws, account } => {
 			match chain {
@@ -188,7 +185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				ChainType::Sub => {
 					let accounts = subxt_transaction::derive_accounts::<PolkadotConfig, _, _>(
 						accounts_description.clone(),
-						subxt_transaction::SENDER_SEED,
+						SENDER_SEED,
 						generate_sr25519_keypair,
 					);
 					accounts
@@ -206,7 +203,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				ChainType::Eth => {
 					let accounts = subxt_transaction::derive_accounts::<EthRuntimeConfig, _, _>(
 						accounts_description.clone(),
-						subxt_transaction::SENDER_SEED,
+						SENDER_SEED,
 						generate_ecdsa_keypair,
 					);
 					accounts
