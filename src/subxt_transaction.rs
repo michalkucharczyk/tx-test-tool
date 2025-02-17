@@ -368,10 +368,11 @@ pub fn generate_sr25519_keypair(description: AccountGenerateRequest) -> SrPair {
 }
 
 /// Interface for implementors of keypairs generators.
-pub(crate) trait GenerateKeyPairFunction<KP>:
+pub trait GenerateKeyPairFunction<KP>:
 	Fn(AccountGenerateRequest) -> KP + Copy + Send + 'static
 {
 }
+
 impl<T, KP> GenerateKeyPairFunction<KP> for T where
 	T: Fn(AccountGenerateRequest) -> KP + Copy + Send + 'static
 {

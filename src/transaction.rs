@@ -1,5 +1,7 @@
 use crate::{
 	error::Error,
+	fake_transaction::{FakeHash, FakeTransaction},
+	fake_transaction_sink::FakeTransactionsSink,
 	helpers::StreamOf,
 	runner::DefaultTxTask,
 	subxt_transaction::{
@@ -88,8 +90,55 @@ impl TransactionBuilder for EthTransactionBuilder {
 	}
 }
 
+#[allow(dead_code)]
+#[derive(Default)]
+/// A transaction builder sink that's used as mock for logic relying on a transaction builder.
+pub(crate) struct FakeTransactionBuilder;
+
+#[async_trait]
+impl TransactionBuilder for FakeTransactionBuilder {
+	type HashType = FakeHash;
+	type Transaction = FakeTransaction;
+	type Sink = FakeTransactionsSink;
+	async fn build_transaction<'a>(
+		&self,
+		account: &'a str,
+		_nonce: &Option<u128>,
+		sink: &Self::Sink,
+		unwatched: bool,
+		_recipe: &TransactionRecipe,
+	) -> DefaultTxTask<Self::Transaction> {
+		if unwatched {
+			todo!()
+		};
+		let mut nonces = sink.nonces.write();
+		let nonce = if let Some(nonce) = nonces.get_mut(&hex::encode(account)) {
+			*nonce = *nonce + 1;
+			*nonce
+		} else {
+			nonces.insert(hex::encode(account), 0);
+			0
+		};
+		let id = account.parse::<u32>().ok();
+
+		if let Some(i) = id {
+			DefaultTxTask::<FakeTransaction>::new_watched(FakeTransaction::new_multiple(
+				i,
+				nonce,
+				vec![].into(),
+			))
+		} else {
+			DefaultTxTask::<FakeTransaction>::new_watched(FakeTransaction::new_with_keyring(
+				"alice".to_string(),
+				nonce,
+				vec![].into(),
+			))
+		}
+	}
+}
+
 /// What account was used to sign transaction
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+#[derive(Default, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub enum AccountMetadata {
 	/// Holds index used for account derivation
 	#[default]
@@ -98,8 +147,9 @@ pub enum AccountMetadata {
 	KeyRing(String),
 }
 
+/// Type of transaction logic.
 #[derive(Clone)]
-pub(crate) enum TransactionCall {
+pub enum TransactionCall {
 	Transfer,
 	Remark(u32),
 }
@@ -107,7 +157,7 @@ pub(crate) enum TransactionCall {
 #[derive(Clone)]
 /// Type of transaction to execute.
 pub struct TransactionRecipe {
-	pub call: TransactionCall,
+	pub(crate) call: TransactionCall,
 }
 
 impl TransactionRecipe {
@@ -195,13 +245,13 @@ pub trait Transaction: Send + Sync {
 }
 
 /// Interface for resubmission handling logic.
-pub(crate) trait ResubmitHandler: Sized {
+pub trait ResubmitHandler: Sized {
 	fn handle_resubmit_request(self) -> Option<Self>;
 }
 
 /// Interface for monitoring transaction state.
 #[async_trait]
-pub(crate) trait TransactionMonitor<H: BlockHash> {
+pub trait TransactionMonitor<H: BlockHash> {
 	async fn wait(&self, tx_hash: H) -> H;
 }
 

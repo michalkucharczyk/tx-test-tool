@@ -427,14 +427,14 @@ mod tests {
 
 		let rpc = FakeTransactionsSink::default();
 		let mut transactions = (0..10)
-			.map(|i| FakeTxTask::new_watched(FakeTransaction::new_finalizable_quick(i)))
+			.map(|i| FakeTxTask::new_watched(FakeTransaction::new_finalizable_quick(i, 0)))
 			// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
 			.collect::<Vec<_>>();
 
-		transactions.push(FakeTxTask::new_watched(FakeTransaction::new_droppable(11u32, 300)));
-		transactions.push(FakeTxTask::new_watched(FakeTransaction::new_invalid(11u32, 300)));
-		transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_invalid(11u32, 300)));
-		transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_error(12u32, 300)));
+		transactions.push(FakeTxTask::new_watched(FakeTransaction::new_droppable(11u32, 0, 300)));
+		transactions.push(FakeTxTask::new_watched(FakeTransaction::new_invalid(11u32, 0, 300)));
+		transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_invalid(11u32, 0, 300)));
+		transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_error(12u32, 0, 300)));
 
 		let (queue, queue_task) = DefaultResubmissionQueue::new();
 
@@ -518,7 +518,7 @@ mod tests {
 
 		let rpc = FakeTransactionsSink::default();
 		let transactions = (0..100000)
-			.map(|i| FakeTxTask::new_watched(FakeTransaction::new_droppable_2nd_success(i, 0)))
+			.map(|i| FakeTxTask::new_watched(FakeTransaction::new_droppable_2nd_success(i, 0, 0)))
 			// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
 			.collect::<Vec<_>>();
 

@@ -5,9 +5,8 @@ use txtesttool::{
 	block_monitor::BlockMonitor,
 	cli::{Cli, CliCommand},
 	execution_log::{journal::Journal, make_stats, STAT_TARGET},
-	fake_transaction::FakeTransaction,
 	runner::DefaultTxTask,
-	scenario::{AccountsDescription, ChainType, ScenarioBuilder},
+	scenario::{AccountsDescription, ChainType, ScenarioBuilder, ScenarioType},
 	subxt_transaction::{
 		self, generate_ecdsa_keypair, generate_sr25519_keypair, EthRuntimeConfig, EthTransaction,
 		EthTransactionsSink, SubstrateTransaction, SubstrateTransactionsSink, SENDER_SEED,
@@ -20,6 +19,24 @@ use std::{fs, fs::File, io::BufReader, time::Duration};
 use subxt::{ext::frame_metadata::RuntimeMetadataPrefixed, PolkadotConfig};
 use tracing::info;
 use txtesttool::init_logger;
+
+macro_rules! populate_scenario_builder {
+	($scenario_builder:expr, $scenario_type:expr) => {{
+		match $scenario_type {
+			ScenarioType::OneShot { account, nonce } =>
+				$scenario_builder.with_start_id(account.clone()).with_nonce_from(*nonce),
+			ScenarioType::FromSingleAccount { account, from, count } => $scenario_builder
+				.with_start_id(account.clone())
+				.with_nonce_from(*from)
+				.with_txs_count(*count),
+			ScenarioType::FromManyAccounts { start_id, last_id, from, count } => $scenario_builder
+				.with_start_id(start_id.to_string())
+				.with_last_id(*last_id)
+				.with_nonce_from(*from)
+				.with_txs_count(*count),
+		}
+	}};
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -43,20 +60,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				unimplemented!()
 			},
 			ChainType::Eth => {
-				let mut scenario_builder = ScenarioBuilder::init()
+				let mut scenario_builder = ScenarioBuilder::new()
 					.with_rpc_uri(ws.to_string())
-					// TODO: unpack scenario type and populate the builder based on its type
-					.with_scenario_type(scenario.clone())
 					.with_chain_type(chain.clone())
-					.with_send_threshold(*send_threshold as usize);
+					.with_send_threshold(*send_threshold as usize)
+					.with_block_monitoring(*block_monitor)
+					.with_watched_txs(!unwatched);
 
-				if block_monitor {
-					scenario_builder = scenario_builder.with_block_monitoring();
-				}
-
-				if !unwatched {
-					scenario_builder = scenario_builder.with_watched_txs();
-				}
+				scenario_builder = populate_scenario_builder!(scenario_builder, scenario);
 
 				if let Some(inner) = remark {
 					scenario_builder = scenario_builder.with_remark_tx_recipe(*inner);
@@ -67,20 +78,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					scenario_executor.execute_txs::<DefaultTxTask<SubstrateTransaction>>().await;
 			},
 			ChainType::Sub => {
-				let mut scenario_builder = ScenarioBuilder::init()
+				let mut scenario_builder = ScenarioBuilder::new()
 					.with_rpc_uri(ws.to_string())
-					// TODO: unpack scenario type and populate the builder based on its type
-					.with_scenario_type(scenario.clone())
 					.with_chain_type(chain.clone())
-					.with_send_threshold(*send_threshold as usize);
+					.with_send_threshold(*send_threshold as usize)
+					.with_block_monitoring(*block_monitor)
+					.with_watched_txs(!unwatched);
 
-				if block_monitor {
-					scenario_builder = scenario_builder.with_block_monitoring();
-				}
-
-				if !unwatched {
-					scenario_builder = scenario_builder.with_watched_txs();
-				}
+				scenario_builder = populate_scenario_builder!(scenario_builder, scenario);
 
 				if let Some(inner) = remark {
 					scenario_builder = scenario_builder.with_remark_tx_recipe(*inner);
@@ -176,8 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				make_stats(logs.values().cloned(), *show_graphs);
 			},
 			ChainType::Fake => {
-				let logs = Journal::<DefaultTxTask<FakeTransaction>>::load_logs(log_file);
-				make_stats(logs.values().cloned(), *show_graphs);
+				unimplemented!()
 			},
 		},
 		CliCommand::GenerateEndowedAccounts {

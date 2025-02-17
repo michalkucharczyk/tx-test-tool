@@ -91,75 +91,23 @@ pub enum ScenarioType {
 	},
 }
 
-impl From<&ScenarioType> for AccountsDescription {
-	fn from(value: &ScenarioType) -> Self {
-		match value {
-			ScenarioType::OneShot { account, .. } =>
-				if let Ok(id) = account.parse::<u32>() {
-					AccountsDescription::Derived(id..id + 1)
-				} else {
-					AccountsDescription::Keyring(account.clone())
-				},
-			ScenarioType::FromManyAccounts { start_id, last_id, .. } =>
-				AccountsDescription::Derived(*start_id..last_id + 1),
-			ScenarioType::FromSingleAccount { account, .. } =>
-				if let Ok(id) = account.parse::<u32>() {
-					AccountsDescription::Derived(id..id + 1)
-				} else {
-					AccountsDescription::Keyring(account.clone())
-				},
-		}
-	}
-}
-
-impl ScenarioType {
-	pub(crate) fn as_tx_build_params(&self) -> Vec<TransactionBuildParams> {
-		match self {
-			ScenarioType::OneShot { account, nonce } => {
-				vec![TransactionBuildParams { account: account.clone(), nonce: *nonce }]
-			},
-			ScenarioType::FromSingleAccount { account, mut from, count } => {
-				let mut tx_build_params = vec![];
-				for _ in 0..*count {
-					tx_build_params
-						.push(TransactionBuildParams { account: account.clone(), nonce: from });
-					from = from.map(|n| n + 1);
-				}
-				tx_build_params
-			},
-			ScenarioType::FromManyAccounts { start_id, last_id, from, count } => {
-				let mut tx_build_params = vec![];
-				for account in *start_id..=*last_id {
-					let mut nonce = from.clone();
-					for _ in 0..*count {
-						tx_build_params
-							.push(TransactionBuildParams { account: account.to_string(), nonce });
-						nonce = nonce.map(|n| n + 1);
-					}
-				}
-				tx_build_params
-			},
-		}
-	}
-}
-
-pub(crate) type EthScenarioRunner = Runner<
+pub type EthScenarioRunner = Runner<
 	DefaultTxTask<EthTransaction>,
 	EthTransactionsSink,
 	DefaultResubmissionQueue<DefaultTxTask<EthTransaction>>,
 >;
-pub(crate) struct EthScenarioExecutor {
+pub struct EthScenarioExecutor {
 	stop_sender: Sender<()>,
 	runner: EthScenarioRunner,
 	resubmission_queue: ResubmissionQueueTask,
 }
 
-pub(crate) type SubstrateScenarioRunner = Runner<
+pub type SubstrateScenarioRunner = Runner<
 	DefaultTxTask<SubstrateTransaction>,
 	SubstrateTransactionsSink,
 	DefaultResubmissionQueue<DefaultTxTask<SubstrateTransaction>>,
 >;
-pub(crate) struct SubstrateScenarioExecutor {
+pub struct SubstrateScenarioExecutor {
 	stop_sender: Sender<()>,
 	runner: SubstrateScenarioRunner,
 	resubmission_queue: ResubmissionQueueTask,
@@ -227,7 +175,10 @@ impl ScenarioExecutor {
 }
 /// Building logic for the execution of a scenario.
 pub struct ScenarioBuilder {
-	scenario_type: Option<ScenarioType>,
+	start_id: Option<String>,
+	last_id: Option<u32>,
+	nonce_from: Option<u128>,
+	txs_count: u32,
 	tx_recipe: Option<TransactionRecipe>,
 	does_block_monitoring: bool,
 	watched_txs: bool,
@@ -243,9 +194,12 @@ impl ScenarioBuilder {
 	/// - `does_block_monitoring` is set to `false`.
 	/// - `installs_ctrl_c_stop_hook` is set to `false`.
 	/// - `send_threshold` is set to `1000`.
-	pub fn init() -> Self {
+	pub fn new() -> Self {
 		ScenarioBuilder {
-			scenario_type: None,
+			start_id: None,
+			last_id: None,
+			nonce_from: None,
+			txs_count: 1,
 			tx_recipe: Some(TransactionRecipe::transfer()),
 			does_block_monitoring: false,
 			watched_txs: false,
@@ -256,11 +210,49 @@ impl ScenarioBuilder {
 		}
 	}
 
-	pub fn with_scenario_type(mut self, scenario_type: ScenarioType) -> Self {
-		self.scenario_type = Some(scenario_type);
+	/// Configure the account that represents the first signer used for the transactions
+	/// building. If the account is representing a number, and the builder isn't configured with a
+	/// last account to sign the last batch of transactions planned for execution, then the scenario
+	/// builder will build transactions only for the account specified with this setter.
+	///
+	/// The parameter is a string that can represent a number or a default development account
+	/// derivation path (e.g. "alice", "bob" etc.). If a number is given (e.g. "0", "1", "2"), it
+	/// will be interpreted as the last part of a default derivation path (see
+	/// [`subxt_transaction::derive_accounts`]), used to generate signer accounts, which are assumed
+	/// to be initialised as development accounts with balances by the networks where the
+	/// transactions will be executed.
+	pub fn with_start_id(mut self, start_id: String) -> Self {
+		self.start_id = Some(start_id);
 		self
 	}
 
+	/// Last id of an account signer that is also representing the end of an ids range,
+	/// each id being the last part of a derivation path used to generate accounts that sign a set
+	/// of transactions (see
+	/// [`subxt_transaction::derive_accounts`]). It is optional and if not set only the `start_id`
+	/// will be considered as a single signer account used to build/execute transactions.
+	pub fn with_last_id(mut self, last_id: u32) -> Self {
+		self.last_id = Some(last_id);
+		self
+	}
+
+	/// The start of a nonce counter that's incremented with each built transaction, in relation to
+	/// a specific signer account (that can be also part of a range of accounts as it happens when
+	/// both `start_id` and `last_id` parameters of the builder are set), while the number of the
+	/// built transactions is lower than `txs_count`.
+	pub fn with_nonce_from(mut self, nonce_from: Option<u128>) -> Self {
+		self.nonce_from = nonce_from;
+		self
+	}
+
+	/// The number of the transactions that will be built in relation to a signer account.
+	pub fn with_txs_count(mut self, txs_count: u32) -> Self {
+		self.txs_count = txs_count;
+		self
+	}
+
+	/// The builder is already initialised with a transfer transaction recipe for the built
+	/// transactions, and this API
 	pub fn with_transfer_tx_recipe(mut self) -> Self {
 		self.tx_recipe = Some(TransactionRecipe::transfer());
 		self
@@ -271,8 +263,8 @@ impl ScenarioBuilder {
 		self
 	}
 
-	pub fn with_block_monitoring(mut self) -> Self {
-		self.does_block_monitoring = true;
+	pub fn with_block_monitoring(mut self, does_block_monitoring: bool) -> Self {
+		self.does_block_monitoring = does_block_monitoring;
 		self
 	}
 
@@ -281,8 +273,8 @@ impl ScenarioBuilder {
 		self
 	}
 
-	pub fn with_watched_txs(mut self) -> Self {
-		self.watched_txs = true;
+	pub fn with_watched_txs(mut self, watched_txs: bool) -> Self {
+		self.watched_txs = watched_txs;
 		self
 	}
 
@@ -302,24 +294,39 @@ impl ScenarioBuilder {
 	}
 
 	/// Returns a set of tasks that handle transaction execution.
-	async fn build_transactions<H, T, S, B>(
-		&self,
-		builder: B,
-		sink: S,
-		tx_build_params: Vec<TransactionBuildParams>,
-		watched: bool,
-	) -> Vec<DefaultTxTask<T>>
+	async fn build_transactions<H, T, S, B>(&self, builder: B, sink: S) -> Vec<DefaultTxTask<T>>
 	where
 		H: BlockHash + 'static,
 		T: Transaction<HashType = H> + ResubmitHandler + Send + 'static,
 		S: TransactionsSink<H> + 'static + Clone,
 		B: TransactionBuilder<HashType = H, Transaction = T, Sink = S> + Send + Sync + 'static,
 	{
+		let mut tx_build_params = vec![];
+		if let Some(start_id) = self.start_id.clone().and_then(|inner| inner.parse::<u32>().ok()) {
+			let last_id = self.last_id.unwrap_or(start_id);
+			for account in start_id..=last_id {
+				let mut nonce = self.nonce_from.clone();
+				for _ in 0..self.txs_count {
+					tx_build_params
+						.push(TransactionBuildParams { account: account.to_string(), nonce });
+					nonce = nonce.map(|n| n + 1);
+				}
+			}
+		} else {
+			let mut nonce = self.nonce_from.clone();
+			let account = self.start_id.clone().expect("to have a configured starting account id");
+			for _ in 0..self.txs_count {
+				tx_build_params.push(TransactionBuildParams { account: account.clone(), nonce });
+				nonce = nonce.map(|n| n + 1);
+			}
+		}
+
 		let n = tx_build_params.len();
 		let t = std::cmp::min(
 			n,
 			std::thread::available_parallelism().unwrap_or(1usize.try_into().unwrap()).get(),
 		);
+
 		let tx_build_params = Arc::<Vec<TransactionBuildParams>>::from(tx_build_params);
 		let builder = Arc::new(builder);
 		let mut threads = Vec::new();
@@ -333,6 +340,7 @@ impl ScenarioBuilder {
 				.tx_recipe
 				.clone()
 				.expect("to be configured with a transaction recipe. qed.");
+			let watched_txs = self.watched_txs;
 			threads.push(tokio::task::spawn(async move {
 				let mut txs = vec![];
 				for i in chunk {
@@ -343,7 +351,7 @@ impl ScenarioBuilder {
 								&build_params.account,
 								&build_params.nonce,
 								&sink,
-								watched,
+								watched_txs,
 								&recipe,
 							)
 							.await,
@@ -365,15 +373,33 @@ impl ScenarioBuilder {
 
 	/// Returns a runner of transactions for the configured scenario.
 	pub async fn build(self) -> ScenarioExecutor {
-		let scenario_type =
-			self.scenario_type.clone().expect("to have a configured scenario type. qed.");
 		let does_block_monitoring = self.does_block_monitoring;
-		let watched_txs = self.watched_txs;
 		let send_threshold =
 			self.send_threshold.expect("to have configured the send threshold. qed.");
 		let rpc_uri = self.rpc_uri.clone().expect("to have configured the rpc uri. qed.");
 		let chain_type = self.chain_type.clone().expect("to have a configured chain type. qed");
-		let accounts_description = AccountsDescription::from(&scenario_type);
+		let accounts_description = if let Some(last_id) = self.last_id {
+			self.start_id
+				.clone()
+				.expect("to have a configured start account id")
+				.parse::<u32>()
+				.ok()
+				.map(|start_id| AccountsDescription::Derived(start_id..last_id))
+				.unwrap_or(AccountsDescription::Keyring(
+					self.start_id.clone().expect("to have a configured start account id"),
+				))
+		} else {
+			self.start_id
+				.clone()
+				.expect("to have a configured start account id")
+				.parse::<u32>()
+				.ok()
+				.map(|start_id| AccountsDescription::Derived(start_id..start_id + 1))
+				.unwrap_or(AccountsDescription::Keyring(
+					self.start_id.clone().expect("to have a configured start account id"),
+				))
+		};
+
 		let installs_ctrlc_stop_hook = self.installs_ctrl_c_stop_hook;
 		match chain_type {
 			ChainType::Eth => {
@@ -390,10 +416,7 @@ impl ScenarioBuilder {
 						},
 					);
 				let sink = new_with_uri_with_accounts_description.await;
-				let tx_build_params = scenario_type.as_tx_build_params();
-				let txs = self
-					.build_transactions(builder, sink.clone(), tx_build_params, watched_txs)
-					.await;
+				let txs = self.build_transactions(builder, sink.clone()).await;
 				let (queue, queue_task) = DefaultResubmissionQueue::new();
 				let (stop_sender, runner) =
 					Runner::<
@@ -422,10 +445,7 @@ impl ScenarioBuilder {
 					},
 				)
 				.await;
-				let tx_build_params = scenario_type.as_tx_build_params();
-				let txs = self
-					.build_transactions(builder, sink.clone(), tx_build_params, watched_txs)
-					.await;
+				let txs = self.build_transactions(builder, sink.clone()).await;
 				let (queue, queue_task) = DefaultResubmissionQueue::new();
 				let (stop_sender, runner) =
 					Runner::<
@@ -449,31 +469,78 @@ impl ScenarioBuilder {
 
 #[cfg(test)]
 mod tests {
-	use super::ScenarioType;
-	#[test]
-	fn sending_scenario_as_tx_build_params() {
-		let scenario = ScenarioType::OneShot { account: "0".to_string(), nonce: Some(0) };
-		let tx_build_params = scenario.as_tx_build_params();
-		assert_eq!(tx_build_params.len(), 1);
-		assert_eq!(tx_build_params[0].account, "0".to_string());
-		assert_eq!(tx_build_params[0].nonce, Some(0));
+	use crate::{
+		fake_transaction_sink::FakeTransactionsSink,
+		scenario::ScenarioBuilder,
+		transaction::{AccountMetadata, FakeTransactionBuilder},
+	};
 
-		let scenario =
-			ScenarioType::FromSingleAccount { account: "0".to_string(), from: Some(0), count: 10 };
-		let tx_build_params = scenario.as_tx_build_params();
-		assert_eq!(tx_build_params.len(), 10);
-		for (i, params) in tx_build_params.iter().enumerate() {
-			assert_eq!(params.account, "0".to_string());
-			assert_eq!(params.nonce, Some(i as u128));
+	use crate::{runner::TxTask, transaction::Transaction};
+
+	#[tokio::test]
+	async fn build_tx_tasks_based_on_scenario_type() {
+		// One shot from derived account based on number id.
+		let sink = FakeTransactionsSink::default();
+		let builder = FakeTransactionBuilder::default();
+		let scenario_builder =
+			ScenarioBuilder::new().with_start_id("0".to_string()).with_nonce_from(Some(0));
+		let tasks = scenario_builder.build_transactions(builder, sink).await;
+		assert_eq!(tasks.len(), 1);
+		assert_eq!(tasks[0].tx().nonce(), 0);
+		assert_eq!(tasks[0].tx().account_metadata(), AccountMetadata::Derived(0));
+
+		// One shot from derived account.
+		let sink = FakeTransactionsSink::default();
+		let builder = FakeTransactionBuilder::default();
+		let scenario_builder = ScenarioBuilder::new()
+			.with_start_id("alice".to_string())
+			.with_nonce_from(Some(0));
+		let tasks = scenario_builder.build_transactions(builder, sink).await;
+		assert_eq!(tasks.len(), 1);
+		assert_eq!(tasks[0].tx().nonce(), 0);
+		assert_eq!(tasks[0].tx().account_metadata(), AccountMetadata::KeyRing("alice".to_string()));
+
+		// Build from single derived account based on number id.
+		let sink = FakeTransactionsSink::default();
+		let builder = FakeTransactionBuilder::default();
+		let scenario_builder = ScenarioBuilder::new()
+			.with_start_id("1".to_string())
+			.with_nonce_from(Some(0))
+			.with_txs_count(10);
+		let tasks = scenario_builder.build_transactions(builder, sink).await;
+		assert_eq!(tasks.len(), 10);
+		for (i, task) in tasks.iter().enumerate() {
+			assert_eq!(task.tx().nonce(), i as u128);
+			assert_eq!(task.tx().account_metadata(), AccountMetadata::Derived(1));
 		}
 
-		let scenario =
-			ScenarioType::FromManyAccounts { start_id: 0, last_id: 10, from: Some(0), count: 100 };
-		let tx_build_params = scenario.as_tx_build_params();
-		assert_eq!(tx_build_params.len(), 1100);
-		for (nonce, params) in tx_build_params.iter().enumerate() {
-			assert_eq!(params.account, (nonce / 100).to_string());
-			assert_eq!(params.nonce, Some(nonce as u128 % 100));
+		// Buld from single account keyring.
+		let sink = FakeTransactionsSink::default();
+		let builder = FakeTransactionBuilder::default();
+		let scenario_builder = ScenarioBuilder::new()
+			.with_start_id("alice".to_string())
+			.with_nonce_from(Some(0))
+			.with_txs_count(10);
+		let tasks = scenario_builder.build_transactions(builder, sink).await;
+		assert_eq!(tasks.len(), 10);
+		for (i, task) in tasks.iter().enumerate() {
+			assert_eq!(task.tx().nonce(), i as u128);
+			assert_eq!(task.tx().account_metadata(), AccountMetadata::KeyRing("alice".to_string()));
+		}
+
+		// Buld from many derived accounts based on number ids.
+		let sink = FakeTransactionsSink::default();
+		let builder = FakeTransactionBuilder::default();
+		let scenario_builder = ScenarioBuilder::new()
+			.with_start_id("5".to_string())
+			.with_last_id(10)
+			.with_nonce_from(Some(0))
+			.with_txs_count(10);
+		let tasks = scenario_builder.build_transactions(builder, sink).await;
+		assert_eq!(tasks.len(), 60);
+		for (i, task) in tasks.iter().enumerate() {
+			assert_eq!(task.tx().nonce(), i as u128 / 6);
+			assert_eq!(task.tx().account_metadata(), AccountMetadata::Derived((i as u32 % 6) + 5));
 		}
 	}
 }
