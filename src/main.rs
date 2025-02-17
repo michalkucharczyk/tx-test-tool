@@ -43,12 +43,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				unimplemented!()
 			},
 			ChainType::Eth => {
-				let mut scenario_builder = ScenarioBuilder::default()
+				let mut scenario_builder = ScenarioBuilder::init()
 					.with_rpc_uri(ws.to_string())
+					// TODO: unpack scenario type and populate the builder based on its type
 					.with_scenario_type(scenario.clone())
-					.with_block_monitoring()
 					.with_chain_type(chain.clone())
 					.with_send_threshold(*send_threshold as usize);
+
+				if block_monitor {
+					scenario_builder = scenario_builder.with_block_monitoring();
+				}
 
 				if !unwatched {
 					scenario_builder = scenario_builder.with_watched_txs();
@@ -63,12 +67,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					scenario_executor.execute_txs::<DefaultTxTask<SubstrateTransaction>>().await;
 			},
 			ChainType::Sub => {
-				let mut scenario_builder = ScenarioBuilder::default()
+				let mut scenario_builder = ScenarioBuilder::init()
 					.with_rpc_uri(ws.to_string())
+					// TODO: unpack scenario type and populate the builder based on its type
 					.with_scenario_type(scenario.clone())
-					.with_block_monitoring()
 					.with_chain_type(chain.clone())
 					.with_send_threshold(*send_threshold as usize);
+
+				if block_monitor {
+					scenario_builder = scenario_builder.with_block_monitoring();
+				}
 
 				if !unwatched {
 					scenario_builder = scenario_builder.with_watched_txs();

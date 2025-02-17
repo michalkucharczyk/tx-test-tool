@@ -226,7 +226,6 @@ impl ScenarioExecutor {
 	}
 }
 /// Building logic for the execution of a scenario.
-#[derive(Default)]
 pub struct ScenarioBuilder {
 	scenario_type: Option<ScenarioType>,
 	tx_recipe: Option<TransactionRecipe>,
@@ -239,6 +238,24 @@ pub struct ScenarioBuilder {
 }
 
 impl ScenarioBuilder {
+	/// A default initializer of the builder, with a few defaults:
+	/// - `tx_recipe` is set to [`TransactionCall::Transfer`]
+	/// - `does_block_monitoring` is set to `false`.
+	/// - `installs_ctrl_c_stop_hook` is set to `false`.
+	/// - `send_threshold` is set to `1000`.
+	pub fn init() -> Self {
+		ScenarioBuilder {
+			scenario_type: None,
+			tx_recipe: Some(TransactionRecipe::transfer()),
+			does_block_monitoring: false,
+			watched_txs: false,
+			send_threshold: Some(1000),
+			rpc_uri: None,
+			chain_type: None,
+			installs_ctrl_c_stop_hook: false,
+		}
+	}
+
 	pub fn with_scenario_type(mut self, scenario_type: ScenarioType) -> Self {
 		self.scenario_type = Some(scenario_type);
 		self
