@@ -142,9 +142,7 @@ pub enum ScenarioExecutor {
 impl ScenarioExecutor {
 	/// Executes the set of tasks following a transaction on chain, until a final state
 	/// ['TransactionStatusIsDone`].
-	pub async fn execute<T: TxTask + 'static>(
-		self,
-	) -> HashMap<H256, Arc<DefaultExecutionLog<H256>>> {
+	pub async fn execute(self) -> HashMap<H256, Arc<DefaultExecutionLog<H256>>> {
 		match self {
 			ScenarioExecutor::Eth(mut inner) => {
 				let (_, logs) =

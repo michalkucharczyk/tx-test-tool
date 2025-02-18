@@ -74,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				}
 
 				let scenario_executor = scenario_builder.build().await;
-				let _ = scenario_executor.execute::<DefaultTxTask<SubstrateTransaction>>().await;
+				let _ = scenario_executor.execute().await;
 			},
 			ChainType::Sub => {
 				let mut scenario_builder = ScenarioBuilder::new()
@@ -91,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				}
 
 				let scenario_executor = scenario_builder.build().await;
-				let _ = scenario_executor.execute::<DefaultTxTask<EthTransaction>>().await;
+				let _ = scenario_executor.execute().await;
 			},
 		},
 		CliCommand::CheckNonce { chain, ws, account } => {
