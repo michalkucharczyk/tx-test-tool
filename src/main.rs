@@ -84,7 +84,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					.with_chain_type(chain.clone())
 					.with_send_threshold(*send_threshold as usize)
 					.with_block_monitoring(*block_monitor)
-					.with_watched_txs(!unwatched);
+					.with_watched_txs(!unwatched)
+					.with_tip(*tip);
 
 				scenario_builder = populate_scenario_builder!(scenario_builder, scenario);
 
