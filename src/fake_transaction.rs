@@ -1,6 +1,7 @@
 use crate::{
 	error::Error,
-	transaction::{AccountMetadata, ResubmitHandler, StreamOf, Transaction, TransactionStatus},
+	helpers::StreamOf,
+	transaction::{AccountMetadata, ResubmitHandler, Transaction, TransactionStatus},
 };
 use futures::stream::{self};
 use futures_util::StreamExt;
@@ -20,7 +21,7 @@ pub(crate) const LOG_TARGET: &str = "fake_tx";
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Encode, Decode)]
 #[serde(try_from = "String", into = "String")]
-pub struct FakeHash([u8; 4]);
+pub(crate) struct FakeHash([u8; 4]);
 
 impl AsRef<[u8]> for FakeHash {
 	fn as_ref(&self) -> &[u8] {
@@ -80,10 +81,10 @@ impl EventDef {
 	pub fn validated(delay: u32) -> Self {
 		Self { event: TransactionStatus::Validated, delay }
 	}
-	pub fn broadcasted(delay: u32, num: u32) -> Self {
+	pub fn broadcasted(delay: u32) -> Self {
 		Self {
 			//todo
-			event: TransactionStatus::Broadcasted(num),
+			event: TransactionStatus::Broadcasted,
 			delay,
 		}
 	}
@@ -105,7 +106,7 @@ impl EventDef {
 }
 
 #[derive(Clone)]
-pub struct EventsStreamDef(Vec<EventDef>);
+pub(crate) struct EventsStreamDef(pub Vec<EventDef>);
 
 impl From<Vec<EventDef>> for EventsStreamDef {
 	fn from(value: Vec<EventDef>) -> Self {
@@ -113,7 +114,7 @@ impl From<Vec<EventDef>> for EventsStreamDef {
 	}
 }
 
-pub struct FakeTransaction {
+pub(crate) struct FakeTransaction {
 	hash: FakeHash,
 	stream_def: Vec<EventsStreamDef>,
 	current_stream_def: AtomicUsize,
@@ -148,37 +149,58 @@ impl ResubmitHandler for FakeTransaction {
 	}
 }
 
+#[allow(dead_code)]
 impl FakeTransaction {
-	pub fn get_current_stream_def(&self) -> EventsStreamDef {
+	pub(crate) fn get_current_stream_def(&self) -> EventsStreamDef {
 		self.stream_def[self.current_stream_def.load(Ordering::Relaxed)].clone()
 	}
 
-	pub fn new_multiple(index: u32, stream_def: Vec<EventsStreamDef>) -> Self {
+	pub(crate) fn new_multiple(index: u32, nonce: u128, stream_def: Vec<EventsStreamDef>) -> Self {
 		Self {
 			stream_def,
 			hash: index.to_le_bytes().into(),
 			current_stream_def: Default::default(),
-			nonce: index as u128,
+			nonce,
 			account_metadata: AccountMetadata::Derived(index),
 		}
 	}
 
-	pub fn new(index: u32, stream_def: EventsStreamDef) -> Self {
+	pub(crate) fn new_with_keyring(
+		account: String,
+		nonce: u128,
+		stream_def: Vec<EventsStreamDef>,
+	) -> Self {
+		let acc_as_bytes = account.as_bytes();
+		Self {
+			stream_def,
+			hash: [acc_as_bytes[0], acc_as_bytes[1], acc_as_bytes[2], acc_as_bytes[3]].into(),
+			current_stream_def: Default::default(),
+			nonce,
+			account_metadata: AccountMetadata::KeyRing(account),
+		}
+	}
+
+	pub(crate) fn new(index: u32, nonce: u128, stream_def: EventsStreamDef) -> Self {
 		Self {
 			stream_def: vec![stream_def],
 			hash: index.to_le_bytes().into(),
 			current_stream_def: Default::default(),
-			nonce: index as u128,
+			nonce,
 			account_metadata: AccountMetadata::Derived(index),
 		}
 	}
 
-	pub fn new_inblock_then_droppable_2nd_success(hash: u32, delay: u32) -> Self {
+	pub(crate) fn new_inblock_then_droppable_2nd_success(
+		hash: u32,
+		nonce: u128,
+		delay: u32,
+	) -> Self {
 		Self::new_multiple(
 			hash,
+			nonce,
 			vec![
 				EventsStreamDef(vec![
-					EventDef::broadcasted(delay, 3),
+					EventDef::broadcasted(delay),
 					EventDef::validated(delay),
 					EventDef::in_block(1, delay),
 					EventDef::in_block(2, delay),
@@ -186,7 +208,7 @@ impl FakeTransaction {
 					EventDef::dropped(delay),
 				]),
 				EventsStreamDef(vec![
-					EventDef::broadcasted(delay, 3),
+					EventDef::broadcasted(delay),
 					EventDef::validated(delay),
 					EventDef::in_block(1, delay),
 					EventDef::in_block(2, delay),
@@ -197,13 +219,14 @@ impl FakeTransaction {
 		)
 	}
 
-	pub fn new_droppable_2nd_success(hash: u32, delay: u32) -> Self {
+	pub(crate) fn new_droppable_2nd_success(hash: u32, nonce: u128, delay: u32) -> Self {
 		Self::new_multiple(
 			hash,
+			nonce,
 			vec![
 				EventsStreamDef(vec![EventDef::dropped(delay)]),
 				EventsStreamDef(vec![
-					EventDef::broadcasted(delay, 3),
+					EventDef::broadcasted(delay),
 					EventDef::validated(delay),
 					EventDef::in_block(1, delay),
 					EventDef::in_block(2, delay),
@@ -214,9 +237,10 @@ impl FakeTransaction {
 		)
 	}
 
-	pub fn new_droppable_loop(hash: u32, delay: u32) -> Self {
+	pub(crate) fn new_droppable_loop(hash: u32, nonce: u128, delay: u32) -> Self {
 		Self::new_multiple(
 			hash,
+			nonce,
 			vec![
 				EventsStreamDef(vec![EventDef::dropped(delay)]),
 				EventsStreamDef(vec![EventDef::dropped(delay)]),
@@ -227,24 +251,25 @@ impl FakeTransaction {
 		)
 	}
 
-	pub fn new_droppable(hash: u32, delay: u32) -> Self {
-		Self::new(hash, EventsStreamDef(vec![EventDef::dropped(delay)]))
+	pub(crate) fn new_droppable(hash: u32, nonce: u128, delay: u32) -> Self {
+		Self::new(hash, nonce, EventsStreamDef(vec![EventDef::dropped(delay)]))
 	}
 
-	pub fn new_invalid(hash: u32, delay: u32) -> Self {
-		Self::new(hash, EventsStreamDef(vec![EventDef::invalid(delay)]))
+	pub(crate) fn new_invalid(hash: u32, nonce: u128, delay: u32) -> Self {
+		Self::new(hash, nonce, EventsStreamDef(vec![EventDef::invalid(delay)]))
 	}
 
-	pub fn new_error(hash: u32, delay: u32) -> Self {
-		Self::new(hash, EventsStreamDef(vec![EventDef::error(delay)]))
+	pub(crate) fn new_error(hash: u32, nonce: u128, delay: u32) -> Self {
+		Self::new(hash, nonce, EventsStreamDef(vec![EventDef::error(delay)]))
 	}
 
-	pub fn new_finalizable_quick(hash: u32) -> Self {
+	pub(crate) fn new_finalizable_quick(hash: u32, nonce: u128) -> Self {
 		let delay = 0;
 		Self::new(
 			hash,
+			nonce,
 			EventsStreamDef(vec![
-				EventDef::broadcasted(delay, 3),
+				EventDef::broadcasted(delay),
 				EventDef::validated(delay),
 				EventDef::in_block(1, delay),
 				EventDef::in_block(2, delay),
@@ -254,11 +279,12 @@ impl FakeTransaction {
 		)
 	}
 
-	pub fn new_finalizable(hash: u32) -> Self {
+	pub(crate) fn new_finalizable(hash: u32, nonce: u128) -> Self {
 		Self::new(
 			hash,
+			nonce,
 			EventsStreamDef(vec![
-				EventDef::broadcasted(100, 3),
+				EventDef::broadcasted(100),
 				EventDef::validated(300),
 				EventDef::in_block(1, 1000),
 				EventDef::in_block(2, 1000),
@@ -268,7 +294,7 @@ impl FakeTransaction {
 		)
 	}
 
-	pub fn events(&self) -> StreamOf<TransactionStatus<FakeHash>> {
+	pub(crate) fn events(&self) -> StreamOf<TransactionStatus<FakeHash>> {
 		let def = self.get_current_stream_def();
 		stream::unfold(def.0.into_iter(), move |mut i| async {
 			yield_now().await;
@@ -285,7 +311,7 @@ impl FakeTransaction {
 		.boxed()
 	}
 
-	pub async fn submit_result(&self) -> Result<FakeHash, Error> {
+	pub(crate) async fn submit_result(&self) -> Result<FakeHash, Error> {
 		let EventDef { event, delay } = self
 			.get_current_stream_def()
 			.0
@@ -305,7 +331,7 @@ impl FakeTransaction {
 				Err(Error::Other(format!("submit-error:error:{message}").to_string())),
 			TransactionStatus::Validated |
 			TransactionStatus::NoLongerInBestBlock |
-			TransactionStatus::Broadcasted(_) |
+			TransactionStatus::Broadcasted |
 			TransactionStatus::InBlock(_) => todo!(),
 		}
 	}
@@ -321,8 +347,9 @@ mod test {
 		init_logger();
 		let t = FakeTransaction::new(
 			1,
+			0,
 			EventsStreamDef(vec![
-				EventDef::broadcasted(100, 3),
+				EventDef::broadcasted(100),
 				EventDef::validated(300),
 				EventDef::in_block(1, 1000),
 				EventDef::in_block(2, 1000),
@@ -334,7 +361,7 @@ mod test {
 		assert_eq!(
 			v,
 			vec![
-				TransactionStatus::Broadcasted(3),
+				TransactionStatus::Broadcasted,
 				TransactionStatus::Validated,
 				TransactionStatus::InBlock(1u32.to_le_bytes().into()),
 				TransactionStatus::InBlock(2u32.to_le_bytes().into()),

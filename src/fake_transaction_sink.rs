@@ -1,8 +1,9 @@
 use crate::{
 	error::Error,
 	fake_transaction::{FakeHash, FakeTransaction},
+	helpers::StreamOf,
 	transaction::{
-		StreamOf, Transaction, TransactionMonitor, TransactionStatus, TransactionStatusIsTerminal,
+		Transaction, TransactionMonitor, TransactionStatus, TransactionStatusIsDone,
 		TransactionsSink,
 	},
 };
@@ -15,20 +16,15 @@ use std::{
 };
 use tracing::trace;
 
-#[derive(Clone)]
-pub struct FakeTransactionSink {
+#[derive(Default, Clone)]
+pub(crate) struct FakeTransactionsSink {
 	txs: Arc<RwLock<HashSet<FakeHash>>>,
+	#[allow(dead_code)]
 	pub(crate) nonces: Arc<RwLock<HashMap<String, u128>>>,
 }
 
-impl FakeTransactionSink {
-	pub fn new() -> Self {
-		return Self { txs: Default::default(), nonces: Default::default() };
-	}
-}
-
 #[async_trait]
-impl TransactionsSink<FakeHash> for FakeTransactionSink {
+impl TransactionsSink<FakeHash> for FakeTransactionsSink {
 	async fn submit_and_watch(
 		&self,
 		tx: &dyn Transaction<HashType = FakeHash>,
@@ -79,8 +75,8 @@ mod test {
 
 	#[tokio::test]
 	async fn fake_sink_submit_and_watch_works() {
-		let rpc = FakeTransactionSink::new();
-		let t = FakeTransaction::new_finalizable(1);
+		let rpc = FakeTransactionsSink::default();
+		let t = FakeTransaction::new_finalizable(1, 0);
 
 		let t: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t);
 
@@ -91,7 +87,7 @@ mod test {
 		assert_eq!(
 			v,
 			vec![
-				TransactionStatus::Broadcasted(3),
+				TransactionStatus::Broadcasted,
 				TransactionStatus::Validated,
 				TransactionStatus::InBlock(1u32.to_le_bytes().into()),
 				TransactionStatus::InBlock(2u32.to_le_bytes().into()),
@@ -103,8 +99,8 @@ mod test {
 
 	#[tokio::test]
 	async fn fake_sink_submit_work_droppable() {
-		let rpc = FakeTransactionSink::new();
-		let t = FakeTransaction::new_droppable(1, 10);
+		let rpc = FakeTransactionsSink::default();
+		let t = FakeTransaction::new_droppable(1, 0, 10);
 		let t: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t);
 		let r = rpc.submit(&*t).await.unwrap_err();
 		assert_eq!(r.to_string(), Error::Other("submit-error:dropped:xxx".to_string()).to_string());
@@ -112,8 +108,8 @@ mod test {
 
 	#[tokio::test]
 	async fn fake_sink_submit_work_invalid() {
-		let rpc = FakeTransactionSink::new();
-		let t = FakeTransaction::new_invalid(1, 10);
+		let rpc = FakeTransactionsSink::default();
+		let t = FakeTransaction::new_invalid(1, 0, 10);
 		let t: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t);
 		let r = rpc.submit(&*t).await.unwrap_err();
 		assert_eq!(r.to_string(), Error::Other("submit-error:invalid:xxx".to_string()).to_string());
@@ -121,8 +117,8 @@ mod test {
 
 	#[tokio::test]
 	async fn fake_sink_submit_work_error() {
-		let rpc = FakeTransactionSink::new();
-		let t = FakeTransaction::new_error(1, 10);
+		let rpc = FakeTransactionsSink::default();
+		let t = FakeTransaction::new_error(1, 0, 10);
 		let t: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t);
 		let r = rpc.submit(&*t).await.unwrap_err();
 		assert_eq!(r.to_string(), Error::Other("submit-error:error:xxx".to_string()).to_string());
@@ -130,8 +126,8 @@ mod test {
 
 	#[tokio::test]
 	async fn fake_sink_submit_work_valid() {
-		let rpc = FakeTransactionSink::new();
-		let t = FakeTransaction::new_finalizable_quick(111);
+		let rpc = FakeTransactionsSink::default();
+		let t = FakeTransaction::new_finalizable_quick(111, 0);
 		let t: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t);
 		let r = rpc.submit(&*t).await.unwrap();
 		assert_eq!(r, 111u32.to_le_bytes().into());
@@ -141,9 +137,9 @@ mod test {
 	async fn fake_sink_submit_work_valid_2() {
 		init_logger();
 		info!("start");
-		let rpc = Arc::from(FakeTransactionSink::new());
-		let t1 = FakeTransaction::new(111, vec![EventDef::finalized(11, 250)].into());
-		let t2 = FakeTransaction::new(222, vec![EventDef::finalized(12, 250)].into());
+		let rpc = Arc::from(FakeTransactionsSink::default());
+		let t1 = FakeTransaction::new(111, 0, vec![EventDef::finalized(11, 250)].into());
+		let t2 = FakeTransaction::new(222, 0, vec![EventDef::finalized(12, 250)].into());
 		let t1: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t1);
 		let t2: Box<dyn Transaction<HashType = FakeHash>> = Box::from(t2);
 
