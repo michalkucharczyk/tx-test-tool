@@ -3,7 +3,7 @@ use std::{collections::HashMap, marker::PhantomData, pin::Pin};
 use crate::transaction::TransactionMonitor;
 use async_trait::async_trait;
 use futures::Future;
-use subxt::{blocks::Block, config::Hasher, OnlineClient};
+use subxt::{blocks::Block, OnlineClient};
 use subxt_core::config::Header;
 use tokio::{
 	select,

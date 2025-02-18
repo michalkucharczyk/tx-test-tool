@@ -279,7 +279,7 @@ impl ScenarioBuilder {
 	}
 
 	pub fn with_tip(mut self, tip: u128) -> Self {
-		self.tx_recipe.as_mut().map(|mut r| r.tip = tip);
+		self.tx_recipe.as_mut().map(|r| r.tip = tip);
 		self
 	}
 
