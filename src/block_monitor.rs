@@ -67,7 +67,7 @@ impl<C: subxt::Config> BlockMonitor<C> {
 		let extrinsics_count = extrinsics.len();
 		if finalized {
 			for ext in extrinsics.iter() {
-				let hash = <C as subxt::Config>::Hasher::hash_of(&ext.bytes());
+				let hash = ext.hash();
 				if let Some(trigger) = callbacks.remove(&hash) {
 					trace!(?hash, "found transaction, notifying");
 					trigger.send(block_hash).unwrap();
