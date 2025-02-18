@@ -158,15 +158,16 @@ pub enum TransactionCall {
 /// Type of transaction to execute.
 pub struct TransactionRecipe {
 	pub(crate) call: TransactionCall,
+	pub(crate) tip: u128,
 }
 
 impl TransactionRecipe {
 	pub fn transfer() -> Self {
-		Self { call: TransactionCall::Transfer }
+		Self { call: TransactionCall::Transfer, tip: 0 }
 	}
 
 	pub fn remark(size: u32) -> Self {
-		Self { call: TransactionCall::Remark(size) }
+		Self { call: TransactionCall::Remark(size), tip: 0 }
 	}
 }
 

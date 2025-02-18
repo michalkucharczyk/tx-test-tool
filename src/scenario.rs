@@ -278,6 +278,11 @@ impl ScenarioBuilder {
 		self
 	}
 
+	pub fn with_tip(mut self, tip: u128) -> Self {
+		self.tx_recipe.as_mut().map(|mut r| r.tip = tip);
+		self
+	}
+
 	pub fn with_chain_type(mut self, chain_type: ChainType) -> Self {
 		self.chain_type = Some(chain_type);
 		self

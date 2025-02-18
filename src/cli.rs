@@ -38,6 +38,9 @@ pub enum CliCommand {
 		/// sent.
 		#[clap(long)]
 		remark: Option<u32>,
+		/// Transaction tip (allows to control prio)
+		#[clap(long, default_value_t = 0)]
+		tip: u128,
 		/// Accounts range used for building/seding transactions.
 		#[clap(subcommand)]
 		scenario: ScenarioType,
