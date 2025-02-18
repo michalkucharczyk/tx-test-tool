@@ -384,7 +384,7 @@ impl ScenarioBuilder {
 				.expect("to have a configured start account id")
 				.parse::<u32>()
 				.ok()
-				.map(|start_id| AccountsDescription::Derived(start_id..last_id))
+				.map(|start_id| AccountsDescription::Derived(start_id..last_id + 1))
 				.unwrap_or(AccountsDescription::Keyring(
 					self.start_id.clone().expect("to have a configured start account id"),
 				))

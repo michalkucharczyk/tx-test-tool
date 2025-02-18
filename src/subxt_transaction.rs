@@ -563,10 +563,49 @@ where
 
 #[cfg(test)]
 mod tests {
+	use subxt::SubstrateConfig;
+
+	use crate::{
+		subxt_transaction::{
+			derive_accounts, generate_sr25519_keypair, AccountGenerateRequest, SENDER_SEED,
+		},
+		transaction::AccountMetadata,
+	};
 
 	#[tokio::test]
-	async fn placeholder() -> Result<(), Box<dyn std::error::Error>> {
-		//todo add tests....
-		Ok(())
+	async fn test_derive_accounts_len() {
+		let accounts = derive_accounts::<SubstrateConfig, subxt_signer::sr25519::Keypair, _>(
+			crate::scenario::AccountsDescription::Derived(0..11),
+			SENDER_SEED,
+			generate_sr25519_keypair,
+		);
+		assert_eq!(accounts.len(), 11);
+		for (i, (kp, meta)) in accounts {
+			let id = i.parse::<u32>().unwrap();
+			assert_eq!(
+				kp.public_key().0,
+				generate_sr25519_keypair(AccountGenerateRequest::Derived(
+					SENDER_SEED.to_string(),
+					id
+				))
+				.public_key()
+				.0
+			);
+			assert_eq!(AccountMetadata::Derived(id), meta);
+		}
+
+		let accounts = derive_accounts::<SubstrateConfig, subxt_signer::sr25519::Keypair, _>(
+			crate::scenario::AccountsDescription::Keyring("alice".to_string()),
+			SENDER_SEED,
+			generate_sr25519_keypair,
+		);
+		assert_eq!(accounts.len(), 1);
+		assert_eq!(
+			accounts.get("alice").unwrap().0.public_key().0,
+			generate_sr25519_keypair(AccountGenerateRequest::Keyring("alice".to_string()))
+				.public_key()
+				.0
+		);
+		assert_eq!(accounts.get("alice").unwrap().1, AccountMetadata::KeyRing("alice".to_string()))
 	}
 }
