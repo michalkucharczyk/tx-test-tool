@@ -30,7 +30,7 @@ pub(crate) struct TransactionBuildParams {
 
 #[derive(Debug, Clone)]
 /// Describes the account types that will participate
-/// in a [`SendingScenario`].
+/// in a [`ScenarioType`].
 pub enum AccountsDescription {
 	Keyring(String),
 	Derived(Range<u32>),
@@ -145,8 +145,7 @@ pub enum ScenarioExecutor {
 }
 
 impl ScenarioExecutor {
-	/// Executes the set of tasks following a transaction on chain until a final state
-	/// [`transaction::TransactionStatusIsDone`] is reached.
+	/// Executes the set of tasks where each follows a unique transaction on chain until a final state is reached.
 	#[instrument(skip(self), fields(id = tracing::field::Empty))]
 	pub async fn execute(self) -> HashMap<H256, Arc<TransactionExecutionLog<H256>>> {
 		let span = Span::current();
@@ -206,7 +205,7 @@ pub struct ScenarioBuilder {
 
 impl ScenarioBuilder {
 	/// A default initializer of the builder, with a few defaults:
-	/// - `tx_recipe` is set to [`TransactionCall::Transfer`]
+	/// - `tx_recipe` is set to [`crate::transaction::TransactionCall::Transfer`]
 	/// - `does_block_monitoring` is set to `false`.
 	/// - `installs_ctrl_c_stop_hook` is set to `false`.
 	/// - `send_threshold` is set to `1000`.
@@ -459,7 +458,9 @@ impl ScenarioBuilder {
 						DefaultTxTask<EthTransaction>,
 						EthTransactionsSink,
 						DefaultResubmissionQueue<DefaultTxTask<EthTransaction>>,
-					>::new(send_threshold as usize, sink, txs.into_iter().rev().collect(), queue);
+					>::new(
+						send_threshold as usize, sink, txs.into_iter().rev().collect(), queue
+					);
 				let executor = ScenarioExecutor::Eth(EthScenarioExecutor::new(
 					stop_sender,
 					runner,
