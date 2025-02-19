@@ -141,7 +141,7 @@ impl Counters {
 }
 
 /// Type alias for a dictionary of execution logs.
-pub type Logs<T> = HashMap<TxTaskHash<T>, Arc<DefaultExecutionLog<TxTaskHash<T>>>>;
+pub type Logs<T> = HashMap<TxTaskHash<T>, Arc<TransactionExecutionLog<TxTaskHash<T>>>>;
 
 /// Interface for log recording.
 pub trait ExecutionLog: Sync + Send {
@@ -184,7 +184,7 @@ pub trait ExecutionLog: Sync + Send {
 
 #[derive(Debug)]
 /// A default implementation of an execution log.
-pub struct DefaultExecutionLog<H: BlockHash> {
+pub struct TransactionExecutionLog<H: BlockHash> {
 	events: RwLock<Vec<ExecutionEvent<H>>>,
 	account_metadata: AccountMetadata,
 	nonce: u128,
@@ -192,7 +192,7 @@ pub struct DefaultExecutionLog<H: BlockHash> {
 	total_counters: Arc<Counters>,
 }
 
-impl<H: BlockHash + Default> Default for DefaultExecutionLog<H> {
+impl<H: BlockHash + Default> Default for TransactionExecutionLog<H> {
 	fn default() -> Self {
 		Self {
 			events: Default::default(),
@@ -204,13 +204,13 @@ impl<H: BlockHash + Default> Default for DefaultExecutionLog<H> {
 	}
 }
 
-impl<H: BlockHash + 'static + Default> DefaultExecutionLog<H> {
+impl<H: BlockHash + 'static + Default> TransactionExecutionLog<H> {
 	pub fn new_with_events(events: Vec<ExecutionEvent<H>>) -> Self {
 		Self { events: events.into(), ..Default::default() }
 	}
 }
 
-impl<H: BlockHash + 'static> DefaultExecutionLog<H> {
+impl<H: BlockHash + 'static> TransactionExecutionLog<H> {
 	pub fn new_with_tx(t: &dyn Transaction<HashType = H>, counters: Arc<Counters>) -> Self {
 		Self {
 			events: Default::default(),
@@ -240,7 +240,7 @@ impl<H: BlockHash + 'static> DefaultExecutionLog<H> {
 	}
 }
 
-impl<H: BlockHash + 'static> ExecutionLog for DefaultExecutionLog<H> {
+impl<H: BlockHash + 'static> ExecutionLog for TransactionExecutionLog<H> {
 	type HashType = H;
 
 	fn push_event(&self, event: ExecutionEvent<Self::HashType>) {
@@ -572,9 +572,9 @@ pub mod journal {
 
 	impl<H: BlockHash> DefaultExecutionLogSerdeHelper<H> {}
 
-	impl<H: BlockHash> From<DefaultExecutionLogSerdeHelper<H>> for DefaultExecutionLog<H> {
+	impl<H: BlockHash> From<DefaultExecutionLogSerdeHelper<H>> for TransactionExecutionLog<H> {
 		fn from(value: DefaultExecutionLogSerdeHelper<H>) -> Self {
-			DefaultExecutionLog {
+			TransactionExecutionLog {
 				events: value.events.clone().into(),
 				account_metadata: value.account_metadata,
 				nonce: value.nonce,
@@ -584,7 +584,7 @@ pub mod journal {
 		}
 	}
 
-	impl<H: BlockHash + 'static> DefaultExecutionLog<H> {
+	impl<H: BlockHash + 'static> TransactionExecutionLog<H> {
 		fn get_data(&self) -> DefaultExecutionLogSerdeHelper<H> {
 			DefaultExecutionLogSerdeHelper {
 				events: self.events.read().clone(),
@@ -619,7 +619,7 @@ pub mod journal {
 				serde_json::from_str(&json).expect("Unable to deserialize JSON");
 
 			data.into_iter()
-				.map(|l| (l.0, Arc::new(DefaultExecutionLog::from(l.1))))
+				.map(|l| (l.0, Arc::new(TransactionExecutionLog::from(l.1))))
 				.collect()
 		}
 	}

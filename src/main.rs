@@ -24,13 +24,13 @@ macro_rules! populate_scenario_builder {
 	($scenario_builder:expr, $scenario_type:expr) => {{
 		match $scenario_type {
 			ScenarioType::OneShot { account, nonce } =>
-				$scenario_builder.with_start_id(account.clone()).with_nonce_from(*nonce),
+				$scenario_builder.with_account_id(account.clone()).with_nonce_from(*nonce),
 			ScenarioType::FromSingleAccount { account, from, count } => $scenario_builder
-				.with_start_id(account.clone())
+				.with_account_id(account.clone())
 				.with_nonce_from(*from)
 				.with_txs_count(*count),
 			ScenarioType::FromManyAccounts { start_id, last_id, from, count } => $scenario_builder
-				.with_start_id(start_id.to_string())
+				.with_start_id(*start_id)
 				.with_last_id(*last_id)
 				.with_nonce_from(*from)
 				.with_txs_count(*count),

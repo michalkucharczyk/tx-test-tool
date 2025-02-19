@@ -4,10 +4,11 @@ use clap::{Subcommand, ValueEnum};
 use futures::executor::block_on;
 use subxt::{config::BlockHash, utils::H256};
 use tokio::sync::mpsc::Sender;
+use tracing::{instrument, Span};
 
 use crate::{
 	block_monitor::BlockMonitor,
-	execution_log::DefaultExecutionLog,
+	execution_log::TransactionExecutionLog,
 	resubmission::{DefaultResubmissionQueue, ResubmissionQueueTask},
 	runner::{DefaultTxTask, Runner, TxTask},
 	subxt_transaction::{
@@ -100,6 +101,7 @@ pub struct EthScenarioExecutor {
 	stop_sender: Sender<()>,
 	runner: EthScenarioRunner,
 	resubmission_queue: ResubmissionQueueTask,
+	log_prefix: Option<String>,
 }
 
 pub type SubstrateScenarioRunner = Runner<
@@ -111,6 +113,7 @@ pub struct SubstrateScenarioExecutor {
 	stop_sender: Sender<()>,
 	runner: SubstrateScenarioRunner,
 	resubmission_queue: ResubmissionQueueTask,
+	log_prefix: Option<String>,
 }
 
 impl SubstrateScenarioExecutor {
@@ -118,18 +121,20 @@ impl SubstrateScenarioExecutor {
 		stop_sender: Sender<()>,
 		runner: SubstrateScenarioRunner,
 		resubmission_queue: ResubmissionQueueTask,
+		log_prefix: Option<String>,
 	) -> Self {
-		SubstrateScenarioExecutor { stop_sender, runner, resubmission_queue }
+		SubstrateScenarioExecutor { stop_sender, runner, resubmission_queue, log_prefix }
 	}
 }
 
 impl EthScenarioExecutor {
-	pub fn new(
+	pub(crate) fn new(
 		stop_sender: Sender<()>,
 		runner: EthScenarioRunner,
 		resubmission_queue: ResubmissionQueueTask,
+		log_prefix: Option<String>,
 	) -> Self {
-		EthScenarioExecutor { stop_sender, runner, resubmission_queue }
+		EthScenarioExecutor { stop_sender, runner, resubmission_queue, log_prefix }
 	}
 }
 
@@ -140,16 +145,24 @@ pub enum ScenarioExecutor {
 }
 
 impl ScenarioExecutor {
-	/// Executes the set of tasks following a transaction on chain, until a final state
-	/// ['TransactionStatusIsDone`].
-	pub async fn execute(self) -> HashMap<H256, Arc<DefaultExecutionLog<H256>>> {
+	/// Executes the set of tasks following a transaction on chain until a final state
+	/// [`transaction::TransactionStatusIsDone`] is reached.
+	#[instrument(skip(self))]
+	pub async fn execute(self) -> HashMap<H256, Arc<TransactionExecutionLog<H256>>> {
+		let span = Span::current();
 		match self {
 			ScenarioExecutor::Eth(mut inner) => {
+				if let Some(log_prefix) = inner.log_prefix {
+					span.record("name", log_prefix);
+				}
 				let (_, logs) =
 					futures::future::join(inner.resubmission_queue, inner.runner.run()).await;
 				logs
 			},
 			ScenarioExecutor::Substrate(mut inner) => {
+				if let Some(log_prefix) = inner.log_prefix {
+					span.record("name", log_prefix);
+				}
 				let (_, logs) =
 					futures::future::join(inner.resubmission_queue, inner.runner.run()).await;
 				logs
@@ -175,7 +188,8 @@ impl ScenarioExecutor {
 }
 /// Building logic for the execution of a scenario.
 pub struct ScenarioBuilder {
-	start_id: Option<String>,
+	account_id: Option<String>,
+	start_id: Option<u32>,
 	last_id: Option<u32>,
 	nonce_from: Option<u128>,
 	txs_count: u32,
@@ -186,6 +200,8 @@ pub struct ScenarioBuilder {
 	rpc_uri: Option<String>,
 	chain_type: Option<ChainType>,
 	installs_ctrl_c_stop_hook: bool,
+	log_prefix: Option<String>,
+	tip: u128,
 }
 
 impl ScenarioBuilder {
@@ -196,6 +212,7 @@ impl ScenarioBuilder {
 	/// - `send_threshold` is set to `1000`.
 	pub fn new() -> Self {
 		ScenarioBuilder {
+			account_id: None,
 			start_id: None,
 			last_id: None,
 			nonce_from: None,
@@ -207,21 +224,28 @@ impl ScenarioBuilder {
 			rpc_uri: None,
 			chain_type: None,
 			installs_ctrl_c_stop_hook: false,
+			log_prefix: None,
+			tip: 0,
 		}
 	}
 
-	/// Configure the account that represents the first signer used for the transactions
-	/// building. If the account is representing a number, and the builder isn't configured with a
-	/// last account to sign the last batch of transactions planned for execution, then the scenario
+	/// Configure the account id for building a batch of transactions based on a single signer.
+	/// The setter parameter is a string that can be in the form of a number, in which case it will
+	/// behave the same as using `with_start_id` (without `with_last_id`), but it can receive
+	/// a derivation path like the usual Polkadot development accounts (e.g. "alice", "bob", etc).
+	pub fn with_account_id(mut self, account_id: String) -> Self {
+		self.account_id = Some(account_id);
+		self
+	}
+
+	/// Configure the account id for the first signer used for the transactions building.
+	/// If the builder isn't configured with a last signer account id, then the scenario
 	/// builder will build transactions only for the account specified with this setter.
 	///
-	/// The parameter is a string that can represent a number or a default development account
-	/// derivation path (e.g. "alice", "bob" etc.). If a number is given (e.g. "0", "1", "2"), it
-	/// will be interpreted as the last part of a default derivation path (see
-	/// [`subxt_transaction::derive_accounts`]), used to generate signer accounts, which are assumed
-	/// to be initialised as development accounts with balances by the networks where the
-	/// transactions will be executed.
-	pub fn with_start_id(mut self, start_id: String) -> Self {
+	/// It is usually used in pair with `with_last_id`, to set an ids range where each id will be
+	/// the last part of a derivation path used for multiple accounts generation, each being a
+	/// signer for a batch of transactions.
+	pub fn with_start_id(mut self, start_id: u32) -> Self {
 		self.start_id = Some(start_id);
 		self
 	}
@@ -229,8 +253,7 @@ impl ScenarioBuilder {
 	/// Last id of an account signer that is also representing the end of an ids range,
 	/// each id being the last part of a derivation path used to generate accounts that sign a set
 	/// of transactions (see
-	/// [`subxt_transaction::derive_accounts`]). It is optional and if not set only the `start_id`
-	/// will be considered as a single signer account used to build/execute transactions.
+	/// [`crate::subxt_transaction::derive_accounts`]).
 	pub fn with_last_id(mut self, last_id: u32) -> Self {
 		self.last_id = Some(last_id);
 		self
@@ -254,12 +277,16 @@ impl ScenarioBuilder {
 	/// The builder is already initialised with a transfer transaction recipe for the built
 	/// transactions, and this API
 	pub fn with_transfer_tx_recipe(mut self) -> Self {
-		self.tx_recipe = Some(TransactionRecipe::transfer());
+		let mut recipe = TransactionRecipe::transfer();
+		recipe.tip = self.tip;
+		self.tx_recipe = Some(recipe);
 		self
 	}
 
 	pub fn with_remark_tx_recipe(mut self, remark: u32) -> Self {
-		self.tx_recipe = Some(TransactionRecipe::remark(remark));
+		let mut recipe = TransactionRecipe::remark(remark);
+		recipe.tip = self.tip;
+		self.tx_recipe = Some(recipe);
 		self
 	}
 
@@ -280,6 +307,7 @@ impl ScenarioBuilder {
 
 	pub fn with_tip(mut self, tip: u128) -> Self {
 		self.tx_recipe.as_mut().map(|r| r.tip = tip);
+		self.tip = tip;
 		self
 	}
 
@@ -298,6 +326,11 @@ impl ScenarioBuilder {
 		self
 	}
 
+	pub fn with_log_prefix(mut self, log_prefix: String) -> Self {
+		self.log_prefix = Some(log_prefix);
+		self
+	}
+
 	/// Returns a set of tasks that handle transaction execution.
 	async fn build_transactions<H, T, S, B>(&self, builder: B, sink: S) -> Vec<DefaultTxTask<T>>
 	where
@@ -307,7 +340,7 @@ impl ScenarioBuilder {
 		B: TransactionBuilder<HashType = H, Transaction = T, Sink = S> + Send + Sync + 'static,
 	{
 		let mut tx_build_params = vec![];
-		if let Some(start_id) = self.start_id.clone().and_then(|inner| inner.parse::<u32>().ok()) {
+		if let Some(start_id) = self.start_id {
 			let last_id = self.last_id.unwrap_or(start_id);
 			for account in start_id..=last_id {
 				let mut nonce = self.nonce_from.clone();
@@ -319,7 +352,10 @@ impl ScenarioBuilder {
 			}
 		} else {
 			let mut nonce = self.nonce_from.clone();
-			let account = self.start_id.clone().expect("to have a configured starting account id");
+			let account = self
+				.account_id
+				.clone()
+				.expect("to have configured an account id for transactions generation");
 			for _ in 0..self.txs_count {
 				tx_build_params.push(TransactionBuildParams { account: account.clone(), nonce });
 				nonce = nonce.map(|n| n + 1);
@@ -383,26 +419,24 @@ impl ScenarioBuilder {
 			self.send_threshold.expect("to have configured the send threshold. qed.");
 		let rpc_uri = self.rpc_uri.clone().expect("to have configured the rpc uri. qed.");
 		let chain_type = self.chain_type.clone().expect("to have a configured chain type. qed");
-		let accounts_description = if let Some(last_id) = self.last_id {
-			self.start_id
-				.clone()
-				.expect("to have a configured start account id")
-				.parse::<u32>()
-				.ok()
-				.map(|start_id| AccountsDescription::Derived(start_id..last_id + 1))
-				.unwrap_or(AccountsDescription::Keyring(
-					self.start_id.clone().expect("to have a configured start account id"),
-				))
+		let accounts_description = if let Some(start_id) = self.start_id {
+			let last_id = self.last_id.unwrap_or(start_id);
+			AccountsDescription::Derived(start_id..last_id + 1)
 		} else {
-			self.start_id
+			if let Some(account_description) = self
+				.account_id
 				.clone()
-				.expect("to have a configured start account id")
-				.parse::<u32>()
-				.ok()
-				.map(|start_id| AccountsDescription::Derived(start_id..start_id + 1))
-				.unwrap_or(AccountsDescription::Keyring(
-					self.start_id.clone().expect("to have a configured start account id"),
-				))
+				.and_then(|id| id.parse::<u32>().ok())
+				.map(|id| AccountsDescription::Derived(id..id + 1))
+			{
+				account_description
+			} else {
+				AccountsDescription::Keyring(
+					self.account_id
+						.clone()
+						.expect("to have configured an account id for transactions generation"),
+				)
+			}
 		};
 
 		let installs_ctrlc_stop_hook = self.installs_ctrl_c_stop_hook;
@@ -433,6 +467,7 @@ impl ScenarioBuilder {
 					stop_sender,
 					runner,
 					queue_task,
+					self.log_prefix,
 				));
 				installs_ctrlc_stop_hook.then(|| executor.install_ctrlc_stop_hook());
 				executor
@@ -463,11 +498,12 @@ impl ScenarioBuilder {
 					stop_sender,
 					runner,
 					queue_task,
+					self.log_prefix,
 				));
 				installs_ctrlc_stop_hook.then(|| executor.install_ctrlc_stop_hook());
 				executor
 			},
-			ChainType::Fake => todo!(),
+			ChainType::Fake => unimplemented!(),
 		}
 	}
 }
@@ -487,8 +523,7 @@ mod tests {
 		// One shot from derived account based on number id.
 		let sink = FakeTransactionsSink::default();
 		let builder = FakeTransactionBuilder::default();
-		let scenario_builder =
-			ScenarioBuilder::new().with_start_id("0".to_string()).with_nonce_from(Some(0));
+		let scenario_builder = ScenarioBuilder::new().with_start_id(0).with_nonce_from(Some(0));
 		let tasks = scenario_builder.build_transactions(builder, sink).await;
 		assert_eq!(tasks.len(), 1);
 		assert_eq!(tasks[0].tx().nonce(), 0);
@@ -498,7 +533,7 @@ mod tests {
 		let sink = FakeTransactionsSink::default();
 		let builder = FakeTransactionBuilder::default();
 		let scenario_builder = ScenarioBuilder::new()
-			.with_start_id("alice".to_string())
+			.with_account_id("alice".to_string())
 			.with_nonce_from(Some(0));
 		let tasks = scenario_builder.build_transactions(builder, sink).await;
 		assert_eq!(tasks.len(), 1);
@@ -509,7 +544,7 @@ mod tests {
 		let sink = FakeTransactionsSink::default();
 		let builder = FakeTransactionBuilder::default();
 		let scenario_builder = ScenarioBuilder::new()
-			.with_start_id("1".to_string())
+			.with_start_id(1)
 			.with_nonce_from(Some(0))
 			.with_txs_count(10);
 		let tasks = scenario_builder.build_transactions(builder, sink).await;
@@ -523,7 +558,7 @@ mod tests {
 		let sink = FakeTransactionsSink::default();
 		let builder = FakeTransactionBuilder::default();
 		let scenario_builder = ScenarioBuilder::new()
-			.with_start_id("alice".to_string())
+			.with_account_id("alice".to_string())
 			.with_nonce_from(Some(0))
 			.with_txs_count(10);
 		let tasks = scenario_builder.build_transactions(builder, sink).await;
@@ -537,7 +572,7 @@ mod tests {
 		let sink = FakeTransactionsSink::default();
 		let builder = FakeTransactionBuilder::default();
 		let scenario_builder = ScenarioBuilder::new()
-			.with_start_id("5".to_string())
+			.with_start_id(5)
 			.with_last_id(10)
 			.with_nonce_from(Some(0))
 			.with_txs_count(10);

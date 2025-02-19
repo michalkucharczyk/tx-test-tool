@@ -1,7 +1,7 @@
 use crate::{
 	execution_log::{
-		journal::Journal, make_stats, Counters, DefaultExecutionLog, ExecutionEvent, ExecutionLog,
-		Logs, STAT_TARGET,
+		journal::Journal, make_stats, Counters, ExecutionEvent, ExecutionLog, Logs,
+		TransactionExecutionLog, STAT_TARGET,
 	},
 	resubmission::{NeedsResubmit, ResubmissionQueue, ResubmitReason},
 	transaction::{ResubmitHandler, Transaction, TransactionStatusIsDone, TransactionsSink},
@@ -240,7 +240,7 @@ where
 			.map(|t| {
 				(
 					t.tx().hash(),
-					Arc::new(DefaultExecutionLog::new_with_tx(t.tx(), event_counters.clone())),
+					Arc::new(TransactionExecutionLog::new_with_tx(t.tx(), event_counters.clone())),
 				)
 			})
 			.collect();
