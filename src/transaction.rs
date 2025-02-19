@@ -162,12 +162,12 @@ pub struct TransactionRecipe {
 }
 
 impl TransactionRecipe {
-	pub fn transfer() -> Self {
-		Self { call: TransactionCall::Transfer, tip: 0 }
+	pub fn transfer(tip: u128) -> Self {
+		Self { call: TransactionCall::Transfer, tip }
 	}
 
-	pub fn remark(size: u32) -> Self {
-		Self { call: TransactionCall::Remark(size), tip: 0 }
+	pub fn remark(size: u32, tip: u128) -> Self {
+		Self { call: TransactionCall::Remark(size), tip }
 	}
 }
 

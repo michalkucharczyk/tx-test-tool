@@ -101,7 +101,7 @@ pub struct EthScenarioExecutor {
 	stop_sender: Sender<()>,
 	runner: EthScenarioRunner,
 	resubmission_queue: ResubmissionQueueTask,
-	log_prefix: Option<String>,
+	id: Option<String>,
 }
 
 pub type SubstrateScenarioRunner = Runner<
@@ -113,7 +113,7 @@ pub struct SubstrateScenarioExecutor {
 	stop_sender: Sender<()>,
 	runner: SubstrateScenarioRunner,
 	resubmission_queue: ResubmissionQueueTask,
-	log_prefix: Option<String>,
+	id: Option<String>,
 }
 
 impl SubstrateScenarioExecutor {
@@ -121,9 +121,9 @@ impl SubstrateScenarioExecutor {
 		stop_sender: Sender<()>,
 		runner: SubstrateScenarioRunner,
 		resubmission_queue: ResubmissionQueueTask,
-		log_prefix: Option<String>,
+		id: Option<String>,
 	) -> Self {
-		SubstrateScenarioExecutor { stop_sender, runner, resubmission_queue, log_prefix }
+		SubstrateScenarioExecutor { stop_sender, runner, resubmission_queue, id }
 	}
 }
 
@@ -132,9 +132,9 @@ impl EthScenarioExecutor {
 		stop_sender: Sender<()>,
 		runner: EthScenarioRunner,
 		resubmission_queue: ResubmissionQueueTask,
-		log_prefix: Option<String>,
+		id: Option<String>,
 	) -> Self {
-		EthScenarioExecutor { stop_sender, runner, resubmission_queue, log_prefix }
+		EthScenarioExecutor { stop_sender, runner, resubmission_queue, id }
 	}
 }
 
@@ -147,21 +147,21 @@ pub enum ScenarioExecutor {
 impl ScenarioExecutor {
 	/// Executes the set of tasks following a transaction on chain until a final state
 	/// [`transaction::TransactionStatusIsDone`] is reached.
-	#[instrument(skip(self))]
+	#[instrument(skip(self), fields(id = tracing::field::Empty))]
 	pub async fn execute(self) -> HashMap<H256, Arc<TransactionExecutionLog<H256>>> {
 		let span = Span::current();
 		match self {
 			ScenarioExecutor::Eth(mut inner) => {
-				if let Some(log_prefix) = inner.log_prefix {
-					span.record("name", log_prefix);
+				if let Some(id) = inner.id {
+					span.record("id", id);
 				}
 				let (_, logs) =
 					futures::future::join(inner.resubmission_queue, inner.runner.run()).await;
 				logs
 			},
 			ScenarioExecutor::Substrate(mut inner) => {
-				if let Some(log_prefix) = inner.log_prefix {
-					span.record("name", log_prefix);
+				if let Some(id) = inner.id {
+					span.record("id", id);
 				}
 				let (_, logs) =
 					futures::future::join(inner.resubmission_queue, inner.runner.run()).await;
@@ -200,8 +200,7 @@ pub struct ScenarioBuilder {
 	rpc_uri: Option<String>,
 	chain_type: Option<ChainType>,
 	installs_ctrl_c_stop_hook: bool,
-	log_prefix: Option<String>,
-	tip: u128,
+	executor_id: Option<String>,
 }
 
 impl ScenarioBuilder {
@@ -217,15 +216,14 @@ impl ScenarioBuilder {
 			last_id: None,
 			nonce_from: None,
 			txs_count: 1,
-			tx_recipe: Some(TransactionRecipe::transfer()),
+			tx_recipe: Some(TransactionRecipe::transfer(0)),
 			does_block_monitoring: false,
 			watched_txs: false,
 			send_threshold: Some(1000),
 			rpc_uri: None,
 			chain_type: None,
 			installs_ctrl_c_stop_hook: false,
-			log_prefix: None,
-			tip: 0,
+			executor_id: None,
 		}
 	}
 
@@ -274,19 +272,16 @@ impl ScenarioBuilder {
 		self
 	}
 
-	/// The builder is already initialised with a transfer transaction recipe for the built
-	/// transactions, and this API
-	pub fn with_transfer_tx_recipe(mut self) -> Self {
-		let mut recipe = TransactionRecipe::transfer();
-		recipe.tip = self.tip;
-		self.tx_recipe = Some(recipe);
+	/// The builder is already initialised with a transfer transaction recipe with a tip of 0
+	/// and this API lets builders set it specifically with a certain tip amount.
+	pub fn with_transfer_recipe(mut self, tip: u128) -> Self {
+		self.tx_recipe = Some(TransactionRecipe::transfer(tip));
 		self
 	}
 
-	pub fn with_remark_tx_recipe(mut self, remark: u32) -> Self {
-		let mut recipe = TransactionRecipe::remark(remark);
-		recipe.tip = self.tip;
-		self.tx_recipe = Some(recipe);
+	/// Set a remark transaction recipe with a certain tip.
+	pub fn with_remark_recipe(mut self, remark: u32, tip: u128) -> Self {
+		self.tx_recipe = Some(TransactionRecipe::remark(remark, tip));
 		self
 	}
 
@@ -305,12 +300,6 @@ impl ScenarioBuilder {
 		self
 	}
 
-	pub fn with_tip(mut self, tip: u128) -> Self {
-		self.tx_recipe.as_mut().map(|r| r.tip = tip);
-		self.tip = tip;
-		self
-	}
-
 	pub fn with_chain_type(mut self, chain_type: ChainType) -> Self {
 		self.chain_type = Some(chain_type);
 		self
@@ -326,8 +315,8 @@ impl ScenarioBuilder {
 		self
 	}
 
-	pub fn with_log_prefix(mut self, log_prefix: String) -> Self {
-		self.log_prefix = Some(log_prefix);
+	pub fn with_executor_id(mut self, executor_id: String) -> Self {
+		self.executor_id = Some(executor_id);
 		self
 	}
 
@@ -467,7 +456,7 @@ impl ScenarioBuilder {
 					stop_sender,
 					runner,
 					queue_task,
-					self.log_prefix,
+					self.executor_id,
 				));
 				installs_ctrlc_stop_hook.then(|| executor.install_ctrlc_stop_hook());
 				executor
@@ -498,7 +487,7 @@ impl ScenarioBuilder {
 					stop_sender,
 					runner,
 					queue_task,
-					self.log_prefix,
+					self.executor_id,
 				));
 				installs_ctrlc_stop_hook.then(|| executor.install_ctrlc_stop_hook());
 				executor
