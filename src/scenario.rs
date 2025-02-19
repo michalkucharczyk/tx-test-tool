@@ -201,6 +201,7 @@ pub struct ScenarioBuilder {
 	chain_type: Option<ChainType>,
 	installs_ctrl_c_stop_hook: bool,
 	executor_id: Option<String>,
+	tip: u128,
 }
 
 impl ScenarioBuilder {
@@ -224,6 +225,7 @@ impl ScenarioBuilder {
 			chain_type: None,
 			installs_ctrl_c_stop_hook: false,
 			executor_id: None,
+			tip: 0,
 		}
 	}
 
@@ -274,14 +276,20 @@ impl ScenarioBuilder {
 
 	/// The builder is already initialised with a transfer transaction recipe with a tip of 0
 	/// and this API lets builders set it specifically with a certain tip amount.
-	pub fn with_transfer_recipe(mut self, tip: u128) -> Self {
-		self.tx_recipe = Some(TransactionRecipe::transfer(tip));
+	pub fn with_transfer_recipe(mut self) -> Self {
+		self.tx_recipe = Some(TransactionRecipe::transfer(self.tip));
 		self
 	}
 
 	/// Set a remark transaction recipe with a certain tip.
-	pub fn with_remark_recipe(mut self, remark: u32, tip: u128) -> Self {
-		self.tx_recipe = Some(TransactionRecipe::remark(remark, tip));
+	pub fn with_remark_recipe(mut self, remark: u32) -> Self {
+		self.tx_recipe = Some(TransactionRecipe::remark(remark, self.tip));
+		self
+	}
+
+	pub fn with_tip(mut self, tip: u128) -> Self {
+		self.tx_recipe.as_mut().map(|r| r.tip = tip);
+		self.tip = tip;
 		self
 	}
 
