@@ -13,14 +13,14 @@ use std::{
 	path::Path,
 	pin::Pin,
 	sync::Arc,
-	time::{Duration, Instant},
+	time::{Duration, Instant, SystemTime},
 };
 use subxt::config::BlockHash;
 use tokio::{
 	select,
 	sync::mpsc::{channel, Receiver, Sender},
 };
-use tracing::{debug, info, trace};
+use tracing::{debug, info, instrument, trace, Span};
 
 const LOG_TARGET: &str = "runner";
 
@@ -223,6 +223,7 @@ pub struct Runner<T: TxTask, Sink: TransactionsSink<TxTaskHash<T>>, Queue: Resub
 	last_displayed: Option<Instant>,
 	log_file_name: Option<String>,
 	base_dir_path: Option<String>,
+	executor_id: Option<String>,
 }
 
 impl<T: TxTask + 'static, Sink, Queue: ResubmissionQueue<T>> Runner<T, Sink, Queue>
@@ -238,6 +239,7 @@ where
 		queue: Queue,
 		log_file_name: Option<String>,
 		base_dir_path: Option<String>,
+		executor_id: Option<String>,
 	) -> (Sender<()>, Self) {
 		let event_counters = Arc::from(Counters::default());
 		let logs = transactions
@@ -266,6 +268,7 @@ where
 				last_displayed: None,
 				log_file_name,
 				base_dir_path,
+				executor_id,
 			},
 		)
 	}
@@ -335,8 +338,35 @@ where
 		};
 	}
 
+	fn log_file_path(&self) -> String {
+		let datetime: chrono::DateTime<chrono::Local> = SystemTime::now().into();
+		let formatted_date = datetime.format("%Y%m%d_%H%M%S");
+		let default_file_name = self
+			.executor_id
+			.as_ref()
+			.map(|id| format!("ttxt_{}_{}.json", id, formatted_date))
+			.unwrap_or(format!("ttxt_{}.json", formatted_date));
+		self.base_dir_path
+			.as_ref()
+			.and_then(|basedir| {
+				let filename = self
+					.log_file_name
+					.as_ref()
+					.map(|filename| format!("{basedir}/{filename}_{}", formatted_date))
+					.unwrap_or(format!("{basedir}/{default_file_name}"));
+				Some(filename)
+			})
+			.unwrap_or(default_file_name)
+	}
+
 	/// Drives the runner to completion.
+	#[instrument(skip(self), fields(id = tracing::field::Empty))]
 	pub async fn run(&mut self) -> Logs<T> {
+		let span = Span::current();
+		if let Some(id) = &self.executor_id {
+			span.record("id", id);
+		}
+
 		let start = Instant::now();
 		let original_transactions_count = self.transactions.len();
 		let mut workers = FuturesUnordered::new();
@@ -400,19 +430,7 @@ where
 			}
 		}
 
-		Journal::<T>::save_logs(
-			self.logs.clone(),
-			Path::from(
-				self.base_dir_path
-					.and_then(|basedir| {
-						self.log_file_name.map(|filename| format!("{basedir}/{filename}"))
-					})
-					.unwrap_or_else(|| {
-						let datetime: chrono::DateTime<chrono::Local> = SystemTime::now().into();
-						format!("ttxt_{}.json", datetime.format("%Y%m%d_%H%M%S"))
-					}),
-			),
-		);
+		Journal::<T>::save_logs(self.logs.clone(), Path::new(self.log_file_path().as_str()));
 		info!(target: STAT_TARGET, total_duration = ?start.elapsed(), ?original_transactions_count);
 		make_stats(self.logs.values().cloned(), false);
 		self.logs.clone()
@@ -461,7 +479,7 @@ mod tests {
 			DefaultTxTask<FakeTransaction>,
 			FakeTransactionsSink,
 			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
-		>::new(5, rpc, transactions, queue, None, None);
+		>::new(5, rpc, transactions, queue, None, None, None);
 		join(queue_task, r.run()).await;
 	}
 
@@ -527,7 +545,7 @@ mod tests {
 			DefaultTxTask<EthTransaction>,
 			EthTransactionsSink,
 			DefaultResubmissionQueue<DefaultTxTask<EthTransaction>>,
-		>::new(10_000, rpc, transactions, queue, None, None);
+		>::new(10_000, rpc, transactions, queue, None, None, None);
 		join(queue_task, r.run()).await;
 	}
 
@@ -547,7 +565,7 @@ mod tests {
 			DefaultTxTask<FakeTransaction>,
 			FakeTransactionsSink,
 			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
-		>::new(100000, rpc, transactions, queue, "ttxt_log", None);
+		>::new(100000, rpc, transactions, queue, None, None, None);
 
 		join(queue_task, r.run()).await;
 	}

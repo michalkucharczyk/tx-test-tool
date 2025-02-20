@@ -601,7 +601,7 @@ pub mod journal {
 	where
 		TxTaskHash<T>: 'static,
 	{
-		pub fn save_logs(logs: Logs<T>, filename: Path) {
+		pub fn save_logs(logs: Logs<T>, filename: &Path) {
 			let data = logs.into_iter().map(|(h, l)| (h, l.get_data())).collect::<HashMap<_, _>>();
 			let json = serde_json::to_string(&data).unwrap();
 			let mut file = File::create(filename).unwrap();

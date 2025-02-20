@@ -4,7 +4,6 @@ use clap::{Subcommand, ValueEnum};
 use futures::executor::block_on;
 use subxt::{config::BlockHash, utils::H256};
 use tokio::sync::mpsc::Sender;
-use tracing::{instrument, Span};
 
 use crate::{
 	block_monitor::BlockMonitor,
@@ -101,7 +100,6 @@ pub struct EthScenarioExecutor {
 	stop_sender: Sender<()>,
 	runner: EthScenarioRunner,
 	resubmission_queue: ResubmissionQueueTask,
-	id: Option<String>,
 }
 
 pub type SubstrateScenarioRunner = Runner<
@@ -113,7 +111,6 @@ pub struct SubstrateScenarioExecutor {
 	stop_sender: Sender<()>,
 	runner: SubstrateScenarioRunner,
 	resubmission_queue: ResubmissionQueueTask,
-	id: Option<String>,
 }
 
 impl SubstrateScenarioExecutor {
@@ -121,9 +118,8 @@ impl SubstrateScenarioExecutor {
 		stop_sender: Sender<()>,
 		runner: SubstrateScenarioRunner,
 		resubmission_queue: ResubmissionQueueTask,
-		id: Option<String>,
 	) -> Self {
-		SubstrateScenarioExecutor { stop_sender, runner, resubmission_queue, id }
+		SubstrateScenarioExecutor { stop_sender, runner, resubmission_queue }
 	}
 }
 
@@ -132,9 +128,8 @@ impl EthScenarioExecutor {
 		stop_sender: Sender<()>,
 		runner: EthScenarioRunner,
 		resubmission_queue: ResubmissionQueueTask,
-		id: Option<String>,
 	) -> Self {
-		EthScenarioExecutor { stop_sender, runner, resubmission_queue, id }
+		EthScenarioExecutor { stop_sender, runner, resubmission_queue }
 	}
 }
 
@@ -145,24 +140,16 @@ pub enum ScenarioExecutor {
 }
 
 impl ScenarioExecutor {
-	/// Executes the set of tasks where each follows a unique transaction on chain until a final
-	/// state is reached.
-	#[instrument(skip(self), fields(id = tracing::field::Empty))]
+	/// Executes the set of tasks following a transaction on chain until a final state
+	/// [`transaction::TransactionStatusIsDone`] is reached.
 	pub async fn execute(self) -> HashMap<H256, Arc<TransactionExecutionLog<H256>>> {
-		let span = Span::current();
 		match self {
 			ScenarioExecutor::Eth(mut inner) => {
-				if let Some(id) = inner.id {
-					span.record("id", id);
-				}
 				let (_, logs) =
 					futures::future::join(inner.resubmission_queue, inner.runner.run()).await;
 				logs
 			},
 			ScenarioExecutor::Substrate(mut inner) => {
-				if let Some(id) = inner.id {
-					span.record("id", id);
-				}
 				let (_, logs) =
 					futures::future::join(inner.resubmission_queue, inner.runner.run()).await;
 				logs
@@ -202,7 +189,7 @@ pub struct ScenarioBuilder {
 	installs_ctrl_c_stop_hook: bool,
 	executor_id: Option<String>,
 	tip: u128,
-	log_file_name: Option<String>,
+	log_file_name_prefix: Option<String>,
 	base_dir_path: Option<String>,
 }
 
@@ -228,7 +215,7 @@ impl ScenarioBuilder {
 			installs_ctrl_c_stop_hook: false,
 			executor_id: None,
 			tip: 0,
-			log_file_name: None,
+			log_file_name_prefix: None,
 			base_dir_path: None,
 		}
 	}
@@ -332,8 +319,8 @@ impl ScenarioBuilder {
 		self
 	}
 
-	pub fn with_log_file_name(mut self, log_file_name: String) -> Self {
-		self.log_file_name = Some(log_file_name);
+	pub fn with_log_file_name_prefix(mut self, log_file_name_prefix: String) -> Self {
+		self.log_file_name_prefix = Some(log_file_name_prefix);
 		self
 	}
 
@@ -477,14 +464,14 @@ impl ScenarioBuilder {
 					sink,
 					txs.into_iter().rev().collect(),
 					queue,
-					self.log_file_name,
+					self.log_file_name_prefix,
 					self.base_dir_path,
+					self.executor_id,
 				);
 				let executor = ScenarioExecutor::Eth(EthScenarioExecutor::new(
 					stop_sender,
 					runner,
 					queue_task,
-					self.executor_id,
 				));
 				installs_ctrlc_stop_hook.then(|| executor.install_ctrlc_stop_hook());
 				executor
@@ -513,15 +500,15 @@ impl ScenarioBuilder {
 					sink,
 					txs.into_iter().rev().collect(),
 					queue,
-					self.log_file_name,
+					self.log_file_name_prefix,
 					self.base_dir_path,
+					self.executor_id,
 				);
 
 				let executor = ScenarioExecutor::Substrate(SubstrateScenarioExecutor::new(
 					stop_sender,
 					runner,
 					queue_task,
-					self.executor_id,
 				));
 				installs_ctrlc_stop_hook.then(|| executor.install_ctrlc_stop_hook());
 				executor
