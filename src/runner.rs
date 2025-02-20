@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use futures::{stream::FuturesUnordered, Future, StreamExt};
 use std::{
 	cmp::min,
+	path::Path,
 	pin::Pin,
 	sync::Arc,
 	time::{Duration, Instant},
@@ -220,6 +221,8 @@ pub struct Runner<T: TxTask, Sink: TransactionsSink<TxTaskHash<T>>, Queue: Resub
 	stop_rx: Receiver<()>,
 	event_counters: Arc<Counters>,
 	last_displayed: Option<Instant>,
+	log_file_name: Option<String>,
+	base_dir_path: Option<String>,
 }
 
 impl<T: TxTask + 'static, Sink, Queue: ResubmissionQueue<T>> Runner<T, Sink, Queue>
@@ -233,6 +236,8 @@ where
 		rpc: Sink,
 		transactions: Vec<T>,
 		queue: Queue,
+		log_file_name: Option<String>,
+		base_dir_path: Option<String>,
 	) -> (Sender<()>, Self) {
 		let event_counters = Arc::from(Counters::default());
 		let logs = transactions
@@ -259,6 +264,8 @@ where
 				stop_rx: rx,
 				event_counters,
 				last_displayed: None,
+				log_file_name,
+				base_dir_path,
 			},
 		)
 	}
@@ -393,7 +400,19 @@ where
 			}
 		}
 
-		Journal::<T>::save_logs(self.logs.clone());
+		Journal::<T>::save_logs(
+			self.logs.clone(),
+			Path::from(
+				self.base_dir_path
+					.and_then(|basedir| {
+						self.log_file_name.map(|filename| format!("{basedir}/{filename}"))
+					})
+					.unwrap_or_else(|| {
+						let datetime: chrono::DateTime<chrono::Local> = SystemTime::now().into();
+						format!("ttxt_{}.json", datetime.format("%Y%m%d_%H%M%S"))
+					}),
+			),
+		);
 		info!(target: STAT_TARGET, total_duration = ?start.elapsed(), ?original_transactions_count);
 		make_stats(self.logs.values().cloned(), false);
 		self.logs.clone()
@@ -442,7 +461,7 @@ mod tests {
 			DefaultTxTask<FakeTransaction>,
 			FakeTransactionsSink,
 			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
-		>::new(5, rpc, transactions, queue);
+		>::new(5, rpc, transactions, queue, None, None);
 		join(queue_task, r.run()).await;
 	}
 
@@ -508,7 +527,7 @@ mod tests {
 			DefaultTxTask<EthTransaction>,
 			EthTransactionsSink,
 			DefaultResubmissionQueue<DefaultTxTask<EthTransaction>>,
-		>::new(10_000, rpc, transactions, queue);
+		>::new(10_000, rpc, transactions, queue, None, None);
 		join(queue_task, r.run()).await;
 	}
 
@@ -528,7 +547,7 @@ mod tests {
 			DefaultTxTask<FakeTransaction>,
 			FakeTransactionsSink,
 			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
-		>::new(100000, rpc, transactions, queue);
+		>::new(100000, rpc, transactions, queue, "ttxt_log", None);
 
 		join(queue_task, r.run()).await;
 	}

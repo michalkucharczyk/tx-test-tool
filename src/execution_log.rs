@@ -556,6 +556,8 @@ pub fn make_stats<E: ExecutionLog>(logs: impl IntoIterator<Item = Arc<E>>, show_
 
 pub mod journal {
 
+	use std::path::Path;
+
 	use super::*;
 	pub struct Journal<T: TxTask> {
 		_p: PhantomData<T>,
@@ -599,10 +601,8 @@ pub mod journal {
 	where
 		TxTaskHash<T>: 'static,
 	{
-		pub fn save_logs(logs: Logs<T>) {
+		pub fn save_logs(logs: Logs<T>, filename: Path) {
 			let data = logs.into_iter().map(|(h, l)| (h, l.get_data())).collect::<HashMap<_, _>>();
-			let datetime: chrono::DateTime<chrono::Local> = SystemTime::now().into();
-			let filename = format!("out_{}.json", datetime.format("%Y%m%d_%H%M%S"));
 			let json = serde_json::to_string(&data).unwrap();
 			let mut file = File::create(filename).unwrap();
 			file.write_all(json.as_bytes()).unwrap();

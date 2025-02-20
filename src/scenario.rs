@@ -145,7 +145,8 @@ pub enum ScenarioExecutor {
 }
 
 impl ScenarioExecutor {
-	/// Executes the set of tasks where each follows a unique transaction on chain until a final state is reached.
+	/// Executes the set of tasks where each follows a unique transaction on chain until a final
+	/// state is reached.
 	#[instrument(skip(self), fields(id = tracing::field::Empty))]
 	pub async fn execute(self) -> HashMap<H256, Arc<TransactionExecutionLog<H256>>> {
 		let span = Span::current();
@@ -201,6 +202,8 @@ pub struct ScenarioBuilder {
 	installs_ctrl_c_stop_hook: bool,
 	executor_id: Option<String>,
 	tip: u128,
+	log_file_name: Option<String>,
+	base_dir_path: Option<String>,
 }
 
 impl ScenarioBuilder {
@@ -225,6 +228,8 @@ impl ScenarioBuilder {
 			installs_ctrl_c_stop_hook: false,
 			executor_id: None,
 			tip: 0,
+			log_file_name: None,
+			base_dir_path: None,
 		}
 	}
 
@@ -324,6 +329,16 @@ impl ScenarioBuilder {
 
 	pub fn with_executor_id(mut self, executor_id: String) -> Self {
 		self.executor_id = Some(executor_id);
+		self
+	}
+
+	pub fn with_log_file_name(mut self, log_file_name: String) -> Self {
+		self.log_file_name = Some(log_file_name);
+		self
+	}
+
+	pub fn with_base_dir_path(mut self, base_dir_path: String) -> Self {
+		self.base_dir_path = Some(base_dir_path);
 		self
 	}
 
@@ -453,14 +468,18 @@ impl ScenarioBuilder {
 				let sink = new_with_uri_with_accounts_description.await;
 				let txs = self.build_transactions(builder, sink.clone()).await;
 				let (queue, queue_task) = DefaultResubmissionQueue::new();
-				let (stop_sender, runner) =
-					Runner::<
-						DefaultTxTask<EthTransaction>,
-						EthTransactionsSink,
-						DefaultResubmissionQueue<DefaultTxTask<EthTransaction>>,
-					>::new(
-						send_threshold as usize, sink, txs.into_iter().rev().collect(), queue
-					);
+				let (stop_sender, runner) = Runner::<
+					DefaultTxTask<EthTransaction>,
+					EthTransactionsSink,
+					DefaultResubmissionQueue<DefaultTxTask<EthTransaction>>,
+				>::new(
+					send_threshold as usize,
+					sink,
+					txs.into_iter().rev().collect(),
+					queue,
+					self.log_file_name,
+					self.base_dir_path,
+				);
 				let executor = ScenarioExecutor::Eth(EthScenarioExecutor::new(
 					stop_sender,
 					runner,
@@ -485,12 +504,18 @@ impl ScenarioBuilder {
 				.await;
 				let txs = self.build_transactions(builder, sink.clone()).await;
 				let (queue, queue_task) = DefaultResubmissionQueue::new();
-				let (stop_sender, runner) =
-					Runner::<
-						DefaultTxTask<SubstrateTransaction>,
-						SubstrateTransactionsSink,
-						DefaultResubmissionQueue<DefaultTxTask<SubstrateTransaction>>,
-					>::new(send_threshold, sink, txs.into_iter().rev().collect(), queue);
+				let (stop_sender, runner) = Runner::<
+					DefaultTxTask<SubstrateTransaction>,
+					SubstrateTransactionsSink,
+					DefaultResubmissionQueue<DefaultTxTask<SubstrateTransaction>>,
+				>::new(
+					send_threshold,
+					sink,
+					txs.into_iter().rev().collect(),
+					queue,
+					self.log_file_name,
+					self.base_dir_path,
+				);
 
 				let executor = ScenarioExecutor::Substrate(SubstrateScenarioExecutor::new(
 					stop_sender,
