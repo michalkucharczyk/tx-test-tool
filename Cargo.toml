@@ -1,14 +1,12 @@
 [package]
-name = "txtesttool"
+name = "substrate-txtesttool"
 version = "0.1.0"
 edition = "2021"
-description = "xxx"
+description = "A library and CLI tool for sending transactions to substrate-based chains, enabling developers to test and monitor transaction scenarios."
 
 [[bin]]
-name = "ttxt"
+name = "txtt"
 path = "src/main.rs"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 async-trait = "0.1.81"
@@ -19,7 +17,6 @@ jsonrpsee = { version = "0.24.8", features = [
 	"client-web-transport",
 	"jsonrpsee-types",
 ] }
-# jsonrpsee-types = "0.24.0"
 average = "0.15.1"
 chrono = "0.4.38"
 clap = { version = "4.5.3", features = ["derive"] }

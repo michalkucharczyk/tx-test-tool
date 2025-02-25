@@ -1,13 +1,9 @@
-//! # Transaction Test Tool
+//! The Transaction Test Tool is a library allowing to send transactions to a substrate network,
+//! monitor their status within the transaction pool. The main purpose of the library is to put a
+//! network under different scenarios and ensure transaction pool behaves as expected.
 //!
-//! This is an experimental library that can be used to send transactions
-//! to a substrate network and monitor them in terms of how many have been
-//! submitted to the transaction pool, validated, broadcasted, inlcluded in blocks,
-//! finalized, invalid or dropped. The main purpose of the library is to put under a network under
-//! different scenarios and ensure transaction pool behaves as expected.
-//!
-//! There is an associated binary that can be used as a CLI, an alternative to using
-//! the library.
+//! Additionally, there is a companion command-line interface (CLI) that offers an alternative
+//! means of utilizing the library's capabilities.
 //!
 //! Example:
 //!

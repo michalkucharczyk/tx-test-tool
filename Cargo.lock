@@ -10170,6 +10170,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "substrate-txtesttool"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "average",
+ "chrono",
+ "clap",
+ "clap_derive",
+ "ctrlc",
+ "futures",
+ "futures-util",
+ "hex",
+ "jsonrpsee",
+ "parity-scale-codec",
+ "parking_lot",
+ "rand 0.9.0",
+ "serde",
+ "serde_json",
+ "subxt",
+ "subxt-core",
+ "subxt-signer",
+ "termplot",
+ "thiserror 2.0.11",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "substrate-wasm-builder"
 version = "24.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10803,37 +10834,6 @@ dependencies = [
  "digest 0.10.7",
  "rand 0.8.5",
  "static_assertions",
-]
-
-[[package]]
-name = "txtesttool"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "average",
- "chrono",
- "clap",
- "clap_derive",
- "ctrlc",
- "futures",
- "futures-util",
- "hex",
- "jsonrpsee",
- "parity-scale-codec",
- "parking_lot",
- "rand 0.9.0",
- "serde",
- "serde_json",
- "subxt",
- "subxt-core",
- "subxt-signer",
- "termplot",
- "thiserror 2.0.11",
- "time",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

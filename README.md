@@ -1,6 +1,6 @@
 ## Transaction Testing Tool (`txtt`)
 
-`txtt` is a command-line interface (CLI) designed for testing a fork-aware transaction pool on substrate-based chains. It allows developers and testers to simulate various transaction scenarios monitor blocks, and inspect events for every transaction. `ttxt` is intended to be a main testing tool for transaction pool.
+`txtt` is a library and a command-line interface (CLI) designed for testing a transaction pool on substrate-based chains. It allows developers and testers to simulate various transaction scenarios monitor blocks, and inspect events for every transaction. `txtt` is intended to be a main testing tool for transaction pool.
 
 ### Main features:
 - single-account scenarios: send single or multiple transactions from a specific account,
@@ -74,7 +74,7 @@ This sends 10 transactions for every account with IDs ranging from 100 to 200, f
 ##### *Non-watched* vs. *watched* transaction
 
 
-`ttxt` by default sends *watched* transactions, meaning that every transaction will be sent using `submit_and_watch` and every status reported by node will be tracked (and stored in execution log):
+`txtt` by default sends *watched* transactions, meaning that every transaction will be sent using `submit_and_watch` and every status reported by node will be tracked (and stored in execution log):
 ```
 txtt tx from-single-account --account alice
 ```
