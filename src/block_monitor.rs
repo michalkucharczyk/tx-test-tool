@@ -3,7 +3,7 @@ use std::{collections::HashMap, marker::PhantomData, pin::Pin};
 use crate::transaction::TransactionMonitor;
 use async_trait::async_trait;
 use futures::Future;
-use subxt::{blocks::Block, config::Hasher, OnlineClient};
+use subxt::{blocks::Block, OnlineClient};
 use subxt_core::config::Header;
 use tokio::{
 	select,
@@ -11,12 +11,11 @@ use tokio::{
 };
 use tracing::{info, trace};
 
-const LOG_TARGET: &str = "block_monitor";
-
+/// Monitors if transactions are part of finalized blocks and notifies external listeners when
+/// found.
 pub type BlockMonitorTask = Pin<Box<dyn Future<Output = ()> + Send>>;
 
-type BlockNumber = u64;
-pub type TxFoundListener<H> = oneshot::Receiver<H>;
+type TxFoundListener<H> = oneshot::Receiver<H>;
 type TxFoundListenerTrigger<H> = oneshot::Sender<H>;
 type HashOf<C> = <C as subxt::Config>::Hash;
 
@@ -35,7 +34,8 @@ impl<C: subxt::Config> TransactionMonitor<HashOf<C>> for BlockMonitor<C> {
 }
 
 impl<C: subxt::Config> BlockMonitor<C> {
-	pub async fn new(uri: &String) -> Self {
+	/// Instantiates a [`BlockMonitor`].
+	pub async fn new(uri: &str) -> Self {
 		trace!(uri, "BlockNumber::new");
 		let api = OnlineClient::<C>::from_insecure_url(uri)
 			.await
@@ -45,7 +45,9 @@ impl<C: subxt::Config> BlockMonitor<C> {
 		Self { listener_request_tx, _p: Default::default() }
 	}
 
-	async fn register_listener(&self, h: HashOf<C>) -> TxFoundListener<HashOf<C>> {
+	/// Returns the receiving end of a channel where a notification is sent if the transaction with
+	/// the given hash is found in a finalized block.
+	pub async fn register_listener(&self, h: HashOf<C>) -> TxFoundListener<HashOf<C>> {
 		trace!(hash = ?h, "register_listener");
 		let (tx, external_listener) = oneshot::channel();
 		self.listener_request_tx.send((h, tx)).await.unwrap();
@@ -65,8 +67,7 @@ impl<C: subxt::Config> BlockMonitor<C> {
 		let extrinsics_count = extrinsics.len();
 		if finalized {
 			for ext in extrinsics.iter() {
-				let ext = ext?;
-				let hash = <C as subxt::Config>::Hasher::hash_of(&ext.bytes());
+				let hash = ext.hash();
 				if let Some(trigger) = callbacks.remove(&hash) {
 					trace!(?hash, "found transaction, notifying");
 					trigger.send(block_hash).unwrap();
@@ -81,7 +82,7 @@ impl<C: subxt::Config> BlockMonitor<C> {
 
 	async fn block_monitor_inner(
 		api: OnlineClient<C>,
-		mut listener_requrest_rx: mpsc::Receiver<(HashOf<C>, TxFoundListenerTrigger<HashOf<C>>)>,
+		mut listener_request_rx: mpsc::Receiver<(HashOf<C>, TxFoundListenerTrigger<HashOf<C>>)>,
 	) -> Result<(), Box<dyn std::error::Error>> {
 		let mut finalized_blocks_sub = api.blocks().subscribe_finalized().await?;
 		let mut best_blocks_sub = api.blocks().subscribe_best().await?;
@@ -97,15 +98,15 @@ impl<C: subxt::Config> BlockMonitor<C> {
 					Self::handle_block(&mut callbacks, block, false).await?;
 				}
 
-				Some(listener_request) = listener_requrest_rx.recv() => {
-					trace!("listener_request: {:?}", listener_request.0);
-					callbacks.insert(listener_request.0, listener_request.1);
+				Some((hash, tx)) = listener_request_rx.recv() => {
+					trace!("listener_request: {:?}", hash);
+					callbacks.insert(hash, tx);
 				}
 			}
 		}
 	}
 
-	pub async fn run(
+	async fn run(
 		api: OnlineClient<C>,
 		listener_requrest_rx: mpsc::Receiver<(HashOf<C>, TxFoundListenerTrigger<HashOf<C>>)>,
 	) {

@@ -1,6 +1,6 @@
 use crate::{
 	error::Error,
-	runner::{TxTashHash, TxTask},
+	runner::{TxTask, TxTaskHash},
 	transaction::{AccountMetadata, Transaction, TransactionStatus},
 };
 use average::{Estimate, Max, Mean, Min, Quantile};
@@ -129,7 +129,7 @@ impl Counters {
 			ExecutionEvent::FinalizedMonitor(_, _) => Self::inc(&self.finalized_monitor),
 			ExecutionEvent::TxPoolEvent(_, status) => match status {
 				TransactionStatus::Validated => Self::inc(&self.ts_validated),
-				TransactionStatus::Broadcasted(_) => Self::inc(&self.ts_broadcasted),
+				TransactionStatus::Broadcasted => Self::inc(&self.ts_broadcasted),
 				TransactionStatus::Finalized(_) => Self::inc(&self.ts_finalized),
 				TransactionStatus::Dropped(_) => Self::inc(&self.ts_dropped),
 				TransactionStatus::Invalid(_) => Self::inc(&self.ts_invalid),
@@ -140,6 +140,10 @@ impl Counters {
 	}
 }
 
+/// Type alias for a dictionary of execution logs.
+pub type Logs<T> = HashMap<TxTaskHash<T>, Arc<TransactionExecutionLog<TxTaskHash<T>>>>;
+
+/// Interface for log recording.
 pub trait ExecutionLog: Sync + Send {
 	type HashType: BlockHash;
 
@@ -179,7 +183,8 @@ pub trait ExecutionLog: Sync + Send {
 }
 
 #[derive(Debug)]
-pub struct DefaultExecutionLog<H: BlockHash> {
+/// A default implementation of an execution log.
+pub struct TransactionExecutionLog<H: BlockHash> {
 	events: RwLock<Vec<ExecutionEvent<H>>>,
 	account_metadata: AccountMetadata,
 	nonce: u128,
@@ -187,9 +192,7 @@ pub struct DefaultExecutionLog<H: BlockHash> {
 	total_counters: Arc<Counters>,
 }
 
-pub type Logs<T> = HashMap<TxTashHash<T>, Arc<DefaultExecutionLog<TxTashHash<T>>>>;
-
-impl<H: BlockHash + Default> Default for DefaultExecutionLog<H> {
+impl<H: BlockHash + Default> Default for TransactionExecutionLog<H> {
 	fn default() -> Self {
 		Self {
 			events: Default::default(),
@@ -201,13 +204,13 @@ impl<H: BlockHash + Default> Default for DefaultExecutionLog<H> {
 	}
 }
 
-impl<H: BlockHash + 'static + Default> DefaultExecutionLog<H> {
+impl<H: BlockHash + 'static + Default> TransactionExecutionLog<H> {
 	pub fn new_with_events(events: Vec<ExecutionEvent<H>>) -> Self {
 		Self { events: events.into(), ..Default::default() }
 	}
 }
 
-impl<H: BlockHash + 'static> DefaultExecutionLog<H> {
+impl<H: BlockHash + 'static> TransactionExecutionLog<H> {
 	pub fn new_with_tx(t: &dyn Transaction<HashType = H>, counters: Arc<Counters>) -> Self {
 		Self {
 			events: Default::default(),
@@ -237,7 +240,7 @@ impl<H: BlockHash + 'static> DefaultExecutionLog<H> {
 	}
 }
 
-impl<H: BlockHash + 'static> ExecutionLog for DefaultExecutionLog<H> {
+impl<H: BlockHash + 'static> ExecutionLog for TransactionExecutionLog<H> {
 	type HashType = H;
 
 	fn push_event(&self, event: ExecutionEvent<Self::HashType>) {
@@ -308,7 +311,7 @@ impl<H: BlockHash + 'static> ExecutionLog for DefaultExecutionLog<H> {
 
 	fn time_to_broadcasted(&self) -> Option<Duration> {
 		let bts = self.events.read().iter().find_map(|e| match e {
-			ExecutionEvent::TxPoolEvent(i, TransactionStatus::Broadcasted(_)) => Some(*i),
+			ExecutionEvent::TxPoolEvent(i, TransactionStatus::Broadcasted) => Some(*i),
 			_ => None,
 		});
 		Self::duration_since_timestamp(self.get_sent_time_stamp(), bts)
@@ -441,7 +444,7 @@ impl<H: BlockHash + 'static> ExecutionLog for DefaultExecutionLog<H> {
 	}
 
 	fn get_sent_time(&self) -> Option<SystemTime> {
-		return self.get_sent_time_stamp()
+		self.get_sent_time_stamp()
 	}
 }
 
@@ -453,7 +456,7 @@ pub fn single_stat<'a, E: ExecutionLog + 'a>(
 ) {
 	let mut v: Vec<f64> = vec![];
 	for l in logs {
-		let time_to_event = method(&*l);
+		let time_to_event = method(&**l);
 		if let Some(time_to_event) = time_to_event {
 			v.push(time_to_event.as_secs_f64());
 		}
@@ -494,7 +497,7 @@ pub fn failure_reason_stats<'a, E: ExecutionLog + 'a>(
 ) {
 	let mut map = HashMap::<String, usize>::new();
 	for l in logs {
-		for reason in method(&*l) {
+		for reason in method(&**l) {
 			*map.entry(reason).or_default() += 1;
 		}
 	}
@@ -506,7 +509,7 @@ pub fn failure_reason_stats<'a, E: ExecutionLog + 'a>(
 
 pub fn make_stats<E: ExecutionLog>(logs: impl IntoIterator<Item = Arc<E>>, show_graphs: bool) {
 	let logs = logs.into_iter().collect::<Vec<_>>();
-	info!(target: STAT_TARGET, total_recorded_count = logs.iter().count());
+	info!(target: STAT_TARGET, total_recorded_count = logs.len());
 	single_stat("Time to dropped".into(), logs.iter(), E::time_to_dropped, show_graphs);
 	single_stat("Time to error".into(), logs.iter(), E::time_to_error, show_graphs);
 	single_stat("Time to invalid".into(), logs.iter(), E::time_to_invalid, show_graphs);
@@ -552,6 +555,9 @@ pub fn make_stats<E: ExecutionLog>(logs: impl IntoIterator<Item = Arc<E>>, show_
 }
 
 pub mod journal {
+
+	use std::path::Path;
+
 	use super::*;
 	pub struct Journal<T: TxTask> {
 		_p: PhantomData<T>,
@@ -568,9 +574,9 @@ pub mod journal {
 
 	impl<H: BlockHash> DefaultExecutionLogSerdeHelper<H> {}
 
-	impl<H: BlockHash> From<DefaultExecutionLogSerdeHelper<H>> for DefaultExecutionLog<H> {
+	impl<H: BlockHash> From<DefaultExecutionLogSerdeHelper<H>> for TransactionExecutionLog<H> {
 		fn from(value: DefaultExecutionLogSerdeHelper<H>) -> Self {
-			DefaultExecutionLog {
+			TransactionExecutionLog {
 				events: value.events.clone().into(),
 				account_metadata: value.account_metadata,
 				nonce: value.nonce,
@@ -580,7 +586,7 @@ pub mod journal {
 		}
 	}
 
-	impl<H: BlockHash + 'static> DefaultExecutionLog<H> {
+	impl<H: BlockHash + 'static> TransactionExecutionLog<H> {
 		fn get_data(&self) -> DefaultExecutionLogSerdeHelper<H> {
 			DefaultExecutionLogSerdeHelper {
 				events: self.events.read().clone(),
@@ -593,12 +599,10 @@ pub mod journal {
 
 	impl<T: TxTask> Journal<T>
 	where
-		TxTashHash<T>: 'static,
+		TxTaskHash<T>: 'static,
 	{
-		pub fn save_logs(logs: Logs<T>) {
+		pub fn save_logs(logs: Logs<T>, filename: &Path) {
 			let data = logs.into_iter().map(|(h, l)| (h, l.get_data())).collect::<HashMap<_, _>>();
-			let datetime: chrono::DateTime<chrono::Local> = SystemTime::now().into();
-			let filename = format!("out_{}.json", datetime.format("%Y%m%d_%H%M%S"));
 			let json = serde_json::to_string(&data).unwrap();
 			let mut file = File::create(filename).unwrap();
 			file.write_all(json.as_bytes()).unwrap();
@@ -611,11 +615,11 @@ pub mod journal {
 			file.read_to_string(&mut json).expect("Unable to read file");
 
 			// Deserialize the JSON data into the desired type
-			let data: HashMap<TxTashHash<T>, DefaultExecutionLogSerdeHelper<TxTashHash<T>>> =
+			let data: HashMap<TxTaskHash<T>, DefaultExecutionLogSerdeHelper<TxTaskHash<T>>> =
 				serde_json::from_str(&json).expect("Unable to deserialize JSON");
 
 			data.into_iter()
-				.map(|l| (l.0, Arc::new(DefaultExecutionLog::from(l.1))))
+				.map(|l| (l.0, Arc::new(TransactionExecutionLog::from(l.1))))
 				.collect()
 		}
 	}

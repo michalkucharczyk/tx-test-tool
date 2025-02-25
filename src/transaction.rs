@@ -1,19 +1,153 @@
-use crate::error::Error;
+use crate::{
+	error::Error,
+	fake_transaction::{FakeHash, FakeTransaction},
+	fake_transaction_sink::FakeTransactionsSink,
+	helpers::StreamOf,
+	runner::DefaultTxTask,
+	subxt_transaction::{
+		build_eth_tx_payload, build_substrate_tx_payload, build_subxt_tx, EthRuntimeConfig,
+		EthTransaction, EthTransactionsSink, HashOf, SubstrateTransaction,
+		SubstrateTransactionsSink,
+	},
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::{any::Any, pin::Pin};
-use subxt::{config::BlockHash, tx::TxStatus, OnlineClient};
+use std::any::Any;
+use subxt::{config::BlockHash, tx::TxStatus, OnlineClient, PolkadotConfig};
+
+/// Interface for transaction building.
+#[async_trait]
+pub(crate) trait TransactionBuilder {
+	type HashType: BlockHash;
+	type Transaction: Transaction<HashType = Self::HashType>;
+	type Sink: TransactionsSink<Self::HashType>;
+
+	async fn build_transaction<'a>(
+		&self,
+		account: &'a str,
+		nonce: &Option<u128>,
+		sink: &Self::Sink,
+		watched: bool,
+		recipe: &TransactionRecipe,
+	) -> DefaultTxTask<Self::Transaction>;
+}
+
+/// Substrate transactions builder.
+#[derive(Default)]
+pub(crate) struct SubstrateTransactionBuilder {}
+
+#[async_trait]
+impl TransactionBuilder for SubstrateTransactionBuilder {
+	type HashType = HashOf<PolkadotConfig>;
+	type Transaction = SubstrateTransaction;
+	type Sink = SubstrateTransactionsSink;
+	async fn build_transaction<'a>(
+		&self,
+		account: &'a str,
+		nonce: &Option<u128>,
+		sink: &Self::Sink,
+		watched: bool,
+		recipe: &TransactionRecipe,
+	) -> DefaultTxTask<Self::Transaction> {
+		if !watched {
+			DefaultTxTask::<Self::Transaction>::new_unwatched(
+				build_subxt_tx(account, nonce, sink, recipe, build_substrate_tx_payload).await,
+			)
+		} else {
+			DefaultTxTask::<Self::Transaction>::new_watched(
+				build_subxt_tx(account, nonce, sink, recipe, build_substrate_tx_payload).await,
+			)
+		}
+	}
+}
+
+/// Ethereum transactions builder.
+#[derive(Default)]
+pub(crate) struct EthTransactionBuilder {}
+
+#[async_trait]
+impl TransactionBuilder for EthTransactionBuilder {
+	type HashType = HashOf<EthRuntimeConfig>;
+	type Transaction = EthTransaction;
+	type Sink = EthTransactionsSink;
+	async fn build_transaction<'a>(
+		&self,
+		account: &'a str,
+		nonce: &Option<u128>,
+		sink: &Self::Sink,
+		watched: bool,
+		recipe: &TransactionRecipe,
+	) -> DefaultTxTask<Self::Transaction> {
+		if !watched {
+			DefaultTxTask::<Self::Transaction>::new_unwatched(
+				build_subxt_tx(account, nonce, sink, recipe, build_eth_tx_payload).await,
+			)
+		} else {
+			DefaultTxTask::<Self::Transaction>::new_watched(
+				build_subxt_tx(account, nonce, sink, recipe, build_eth_tx_payload).await,
+			)
+		}
+	}
+}
+
+#[allow(dead_code)]
+#[derive(Default)]
+/// A transaction builder sink that's used as mock for logic relying on a transaction builder.
+pub(crate) struct FakeTransactionBuilder;
+
+#[async_trait]
+impl TransactionBuilder for FakeTransactionBuilder {
+	type HashType = FakeHash;
+	type Transaction = FakeTransaction;
+	type Sink = FakeTransactionsSink;
+	async fn build_transaction<'a>(
+		&self,
+		account: &'a str,
+		_nonce: &Option<u128>,
+		sink: &Self::Sink,
+		unwatched: bool,
+		_recipe: &TransactionRecipe,
+	) -> DefaultTxTask<Self::Transaction> {
+		if unwatched {
+			todo!()
+		};
+		let mut nonces = sink.nonces.write();
+		let nonce = if let Some(nonce) = nonces.get_mut(&hex::encode(account)) {
+			*nonce = *nonce + 1;
+			*nonce
+		} else {
+			nonces.insert(hex::encode(account), 0);
+			0
+		};
+		let id = account.parse::<u32>().ok();
+
+		if let Some(i) = id {
+			DefaultTxTask::<FakeTransaction>::new_watched(FakeTransaction::new_multiple(
+				i,
+				nonce,
+				vec![].into(),
+			))
+		} else {
+			DefaultTxTask::<FakeTransaction>::new_watched(FakeTransaction::new_with_keyring(
+				"alice".to_string(),
+				nonce,
+				vec![].into(),
+			))
+		}
+	}
+}
 
 /// What account was used to sign transaction
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+#[derive(Default, PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub enum AccountMetadata {
-	/// Holds index used for in account derivation
+	/// Holds index used for account derivation
 	#[default]
 	None,
 	Derived(u32),
 	KeyRing(String),
 }
 
+/// Type of transaction logic.
 #[derive(Clone)]
 pub enum TransactionCall {
 	Transfer,
@@ -21,21 +155,24 @@ pub enum TransactionCall {
 }
 
 #[derive(Clone)]
+/// Type of transaction to execute.
 pub struct TransactionRecipe {
-	pub call: TransactionCall,
+	pub(crate) call: TransactionCall,
+	pub(crate) tip: u128,
 }
 
 impl TransactionRecipe {
-	pub fn transfer() -> Self {
-		Self { call: TransactionCall::Transfer }
+	pub fn transfer(tip: u128) -> Self {
+		Self { call: TransactionCall::Transfer, tip }
 	}
 
-	pub fn remark(size: u32) -> Self {
-		Self { call: TransactionCall::Remark(size) }
+	pub fn remark(size: u32, tip: u128) -> Self {
+		Self { call: TransactionCall::Remark(size), tip }
 	}
 }
 
-pub trait TransactionStatusIsTerminal {
+/// Interface that asks for logic to decide if a transaction is done.
+pub(crate) trait TransactionStatusIsDone {
 	fn is_terminal(&self) -> bool;
 	fn is_finalized(&self) -> bool;
 	fn is_error(&self) -> bool;
@@ -44,7 +181,7 @@ pub trait TransactionStatusIsTerminal {
 #[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
 pub enum TransactionStatus<H> {
 	Validated,
-	Broadcasted(u32),
+	Broadcasted,
 	InBlock(H),
 	NoLongerInBestBlock,
 	Finalized(H),
@@ -54,7 +191,7 @@ pub enum TransactionStatus<H> {
 }
 
 impl<H> TransactionStatus<H> {
-	pub fn get_letter(&self) -> char {
+	pub(crate) fn get_letter(&self) -> char {
 		match self {
 			TransactionStatus::Validated => 'V',
 			TransactionStatus::Broadcasted { .. } => 'b',
@@ -74,7 +211,7 @@ impl<C: subxt::Config> From<TxStatus<C, OnlineClient<C>>> for TransactionStatus<
 	fn from(value: TxStatus<C, OnlineClient<C>>) -> Self {
 		match value {
 			TxStatus::Validated => TransactionStatus::Validated,
-			TxStatus::Broadcasted { num_peers } => TransactionStatus::Broadcasted(num_peers),
+			TxStatus::Broadcasted => TransactionStatus::Broadcasted,
 			TxStatus::InBestBlock(tx) => TransactionStatus::InBlock(tx.block_hash()),
 			TxStatus::InFinalizedBlock(tx) => TransactionStatus::Finalized(tx.block_hash()),
 			TxStatus::Error { message } => TransactionStatus::Error(message),
@@ -85,7 +222,7 @@ impl<C: subxt::Config> From<TxStatus<C, OnlineClient<C>>> for TransactionStatus<
 	}
 }
 
-impl<H: BlockHash> TransactionStatusIsTerminal for TransactionStatus<H> {
+impl<H: BlockHash> TransactionStatusIsDone for TransactionStatus<H> {
 	fn is_terminal(&self) -> bool {
 		matches!(self, Self::Finalized(_) | Self::Dropped(_) | Self::Invalid(_) | Self::Error(_))
 	}
@@ -99,6 +236,7 @@ impl<H: BlockHash> TransactionStatusIsTerminal for TransactionStatus<H> {
 	}
 }
 
+/// Interface for a multi-chain transaction abstraction.
 pub trait Transaction: Send + Sync {
 	type HashType: BlockHash + 'static;
 	fn hash(&self) -> Self::HashType;
@@ -107,16 +245,16 @@ pub trait Transaction: Send + Sync {
 	fn account_metadata(&self) -> AccountMetadata;
 }
 
+/// Interface for resubmission handling logic.
 pub trait ResubmitHandler: Sized {
 	fn handle_resubmit_request(self) -> Option<Self>;
 }
 
+/// Interface for monitoring transaction state.
 #[async_trait]
 pub trait TransactionMonitor<H: BlockHash> {
 	async fn wait(&self, tx_hash: H) -> H;
 }
-
-pub type StreamOf<I> = Pin<Box<dyn futures::Stream<Item = I> + Send>>;
 
 /// Abstraction for RPC client
 #[async_trait]

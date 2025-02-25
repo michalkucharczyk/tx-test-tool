@@ -1,7 +1,8 @@
 use crate::{
 	block_monitor::BlockMonitor,
-	cli::AccountsDescription,
 	error::Error,
+	helpers::StreamOf,
+	scenario::AccountsDescription,
 	transaction::{
 		AccountMetadata, ResubmitHandler, Transaction, TransactionCall, TransactionMonitor,
 		TransactionRecipe, TransactionStatus, TransactionsSink,
@@ -13,7 +14,6 @@ use parking_lot::RwLock;
 use std::{
 	any::Any,
 	collections::HashMap,
-	pin::Pin,
 	sync::Arc,
 	time::{Duration, Instant},
 };
@@ -29,9 +29,9 @@ use subxt::{
 	tx::{DynamicPayload, Signer, SubmittableExtrinsic},
 	OnlineClient, PolkadotConfig,
 };
-use subxt_core::config::SubstrateExtrinsicParamsBuilder;
+use subxt_core::{config::SubstrateExtrinsicParamsBuilder, utils::AccountId20};
 use subxt_signer::{
-	eth::{dev as eth_dev, AccountId20, Keypair as EthKeypair, Signature},
+	eth::{dev as eth_dev, Keypair as EthKeypair, Signature},
 	sr25519::{dev as sr25519_dev, Keypair as SrPair},
 };
 use tracing::{debug, trace};
@@ -39,6 +39,7 @@ use tracing::{debug, trace};
 const LOG_TARGET: &str = "subxt_tx";
 
 #[derive(Clone)]
+/// Ethereum runtime config definition for subxt usage purposes.
 pub enum EthRuntimeConfig {}
 impl subxt::Config for EthRuntimeConfig {
 	type Hash = subxt::utils::H256;
@@ -52,18 +53,25 @@ impl subxt::Config for EthRuntimeConfig {
 	type AssetId = u32;
 }
 
-pub type HashOf<C> = <C as subxt::Config>::Hash;
-pub type AccountIdOf<C> = <C as subxt::Config>::AccountId;
+/// Type alias for subxt config hash.
+pub(crate) type HashOf<C> = <C as subxt::Config>::Hash;
+/// Type alias for subxt account id.
+pub(crate) type AccountIdOf<C> = <C as subxt::Config>::AccountId;
 
+/// A subxt transaction abstraction.
 pub struct SubxtTransaction<C: subxt::Config> {
 	extrinsic: SubmittableExtrinsic<C, OnlineClient<C>>,
 	nonce: u128,
 	account_metadata: AccountMetadata,
 }
 
+/// Transaction type thart runs on `Ethereum` compatible chains.
 pub type EthTransaction = SubxtTransaction<EthRuntimeConfig>;
+/// Holds the RPC API connection for transaction execution.
 pub type EthTransactionsSink = SubxtTransactionsSink<EthRuntimeConfig, EthKeypair>;
+/// Transaction type that runs on `substrate` compatible chains.
 pub type SubstrateTransaction = SubxtTransaction<PolkadotConfig>;
+/// Holds the RPC API connection for transaction execution.
 pub type SubstrateTransactionsSink = SubxtTransactionsSink<PolkadotConfig, SrPair>;
 
 impl<C: subxt::Config> SubxtTransaction<C> {
@@ -101,8 +109,6 @@ impl<C: subxt::Config> ResubmitHandler for SubxtTransaction<C> {
 		Some(self)
 	}
 }
-
-type StreamOf<I> = Pin<Box<dyn futures::Stream<Item = I> + Send>>;
 
 #[derive(Clone)]
 pub struct SubxtTransactionsSink<C: subxt::Config, KP: Signer<C>> {
@@ -150,7 +156,7 @@ where
 	}
 
 	pub async fn new_with_uri_with_accounts_description<G>(
-		uri: &String,
+		uri: &str,
 		accounts_description: AccountsDescription,
 		generate_pair: G,
 		transaction_monitor: Option<BlockMonitor<C>>,
@@ -159,17 +165,14 @@ where
 		G: GenerateKeyPairFunction<KP>,
 	{
 		let from_accounts =
-			derive_accounts(accounts_description.clone(), &SENDER_SEED, generate_pair);
-		let to_accounts = derive_accounts(accounts_description, &RECEIVER_SEED, generate_pair);
+			derive_accounts(accounts_description.clone(), SENDER_SEED, generate_pair);
+		let to_accounts = derive_accounts(accounts_description, RECEIVER_SEED, generate_pair);
 		Self {
 			api: crate::subxt_api_connector::connect(uri).await.expect(EXPECT_CONNECT),
 			from_accounts: Arc::from(RwLock::from(from_accounts)),
 			to_accounts: Arc::from(RwLock::from(to_accounts)),
 			nonces: Default::default(),
-			rpc_client: crate::subxt_api_connector::my_jsonrpsee_helpers::client(uri)
-				.await
-				.expect(EXPECT_CONNECT)
-				.into(),
+			rpc_client: crate::helpers::client(uri).await.expect(EXPECT_CONNECT).into(),
 			current_pending_extrinsics: Arc::new(None.into()),
 			transaction_monitor,
 		}
@@ -179,19 +182,19 @@ where
 		self.api.clone()
 	}
 
-	pub fn get_from_account_id(&self, account: &String) -> Option<AccountIdOf<C>> {
+	pub fn get_from_account_id(&self, account: &str) -> Option<AccountIdOf<C>> {
 		self.from_accounts.read().get(account).map(|a| a.0.account_id())
 	}
 
-	fn get_to_account_id(&self, account: &String) -> Option<AccountIdOf<C>> {
+	fn get_to_account_id(&self, account: &str) -> Option<AccountIdOf<C>> {
 		self.to_accounts.read().get(account).map(|a| a.0.account_id())
 	}
 
-	fn get_to_account_metadata(&self, account: &String) -> Option<AccountMetadata> {
+	fn get_to_account_metadata(&self, account: &str) -> Option<AccountMetadata> {
 		self.to_accounts.read().get(account).map(|a| a.1.clone())
 	}
 
-	fn get_from_key_pair(&self, account: &String) -> Option<KP> {
+	fn get_from_key_pair(&self, account: &str) -> Option<KP> {
 		self.from_accounts.read().get(account).map(|k| k.0.clone())
 	}
 
@@ -212,8 +215,8 @@ where
 
 		let mut nonces = self.nonces.write();
 		if let Some(nonce) = nonces.get_mut(&hex::encode(account.clone())) {
-			*nonce = *nonce + 1;
-			return Ok(*nonce)
+			*nonce += 1;
+			Ok(*nonce)
 		} else {
 			nonces.insert(hex::encode(account), remote_nonce);
 			Ok(remote_nonce)
@@ -231,6 +234,7 @@ where
 	}
 }
 
+/// Fetches an account storage and returns its nonce.
 pub async fn check_account_nonce<C: subxt::Config>(
 	api: OnlineClient<C>,
 	account: AccountIdOf<C>,
@@ -272,12 +276,7 @@ where
 		let result = tx.extrinsic.submit_and_watch().await;
 
 		match result {
-			Ok(stream) => Ok(stream
-				.map(|e| {
-					// info!(evnt=?e, "SubxtTransactionsSink::map");
-					e.unwrap().into()
-				})
-				.boxed()),
+			Ok(stream) => Ok(stream.map(|e| e.unwrap().into()).boxed()),
 			Err(e) => Err(e.into()),
 		}
 	}
@@ -286,12 +285,11 @@ where
 		&self,
 		tx: &dyn Transaction<HashType = <C as subxt::Config>::Hash>,
 	) -> Result<<C as subxt::Config>::Hash, Error> {
-		// Ok(tx.hash())
 		let tx = tx.as_any().downcast_ref::<SubxtTransaction<C>>().unwrap();
 		tx.extrinsic.submit().await.map_err(|e| e.into())
 	}
 
-	///Current count of transactions being processed by sink
+	/// Current count of transactions being processed by sink.
 	async fn count(&self) -> usize {
 		let current_pending_extrinsics = { *self.current_pending_extrinsics.read() };
 		if let Some((ts, _)) = current_pending_extrinsics {
@@ -315,15 +313,19 @@ where
 	}
 }
 
+/// Types of accounts generation.
 #[derive(Debug, Clone)]
 pub enum AccountGenerateRequest {
 	Keyring(String),
 	Derived(String, u32),
 }
 
+/// Seed user for sender accounts.
 pub const SENDER_SEED: &str = "//Sender";
-pub const RECEIVER_SEED: &str = "//Receiver";
+/// Seed used for receiver accounts.
+pub(crate) const RECEIVER_SEED: &str = "//Receiver";
 
+/// Generates ecdsa based keypairs.
 pub fn generate_ecdsa_keypair(description: AccountGenerateRequest) -> EthKeypair {
 	match description {
 		AccountGenerateRequest::Keyring(name) => match name.as_str() {
@@ -344,6 +346,7 @@ pub fn generate_ecdsa_keypair(description: AccountGenerateRequest) -> EthKeypair
 	}
 }
 
+/// Generates sr25519 based keypairs.
 pub fn generate_sr25519_keypair(description: AccountGenerateRequest) -> SrPair {
 	match description {
 		AccountGenerateRequest::Keyring(name) => match name.as_str() {
@@ -359,20 +362,23 @@ pub fn generate_sr25519_keypair(description: AccountGenerateRequest) -> SrPair {
 			use std::str::FromStr;
 			let derivation = format!("{seed}//{i}");
 			let u = subxt_signer::SecretUri::from_str(&derivation).unwrap();
-			<subxt_signer::sr25519::Keypair>::from_uri(&u).unwrap().into()
+			<subxt_signer::sr25519::Keypair>::from_uri(&u).unwrap()
 		},
 	}
 }
 
+/// Interface for implementors of keypairs generators.
 pub trait GenerateKeyPairFunction<KP>:
 	Fn(AccountGenerateRequest) -> KP + Copy + Send + 'static
 {
 }
+
 impl<T, KP> GenerateKeyPairFunction<KP> for T where
 	T: Fn(AccountGenerateRequest) -> KP + Copy + Send + 'static
 {
 }
 
+/// Logic that derives accounts from a certain seed.
 pub fn derive_accounts<C, KP, G>(
 	accounts_description: AccountsDescription,
 	seed: &str,
@@ -394,7 +400,7 @@ where
 			);
 			let mut threads = Vec::new();
 
-			(0..t).into_iter().for_each(|thread_idx| {
+			(0..t).for_each(|thread_idx| {
 				// let chunk = (thread_idx * (n / t))..((thread_idx + 1) * (n / t));
 				let chunk =
 					(from_id + (thread_idx * n) / t)..(from_id + ((thread_idx + 1) * n) / t);
@@ -420,8 +426,7 @@ where
 
 			threads
 				.into_iter()
-				.map(|h| h.join().unwrap())
-				.flatten()
+				.flat_map(|h| h.join().unwrap())
 				// .map(|p| (p, funds))
 				.collect()
 		},
@@ -445,7 +450,8 @@ impl<T, A: Send + Sync + AsRef<[u8]>> GenerateTxPayloadFunction<A> for T where
 {
 }
 
-pub fn build_substrate_tx_payload(
+/// Generates a transaction payload given a signer account and a transaction recipe.
+pub(crate) fn build_substrate_tx_payload(
 	to_account_id: AccountIdOf<PolkadotConfig>,
 	recipe: &TransactionRecipe,
 ) -> DynamicPayload {
@@ -466,46 +472,17 @@ pub fn build_substrate_tx_payload(
 			)
 		},
 	}
-
-	//works for rococo / asset-hub:
-	// subxt::dynamic::tx(
-	// 	"Balances",
-	// 	"transfer_keep_alive",
-	// 	vec![
-	// 		value!({dest: Id(Value::from_bytes(to_account_id))}),
-	// 		value!({value: Value::u128(1u32.into())}),
-	// 	],
-	// )
-
-	// Basically though, a rust struct is the same as a named composite value, any
-	// sequence/array/tuple is the same as an unnamed composite value, and then there are primitive
-	// values to map to rust primitive types and variant values for enum variants (whose args are
-	// then named or unnamed composites to correspond to enums with named or unnamed args)
-	// subxt::dynamic::tx(
-	// 	"Balances",
-	// 	"transfer_keep_alive",
-	// 	// vec![value!(Id(Value::from_bytes(to_account_id))), Value::u128(1u32.into())],
-	// 	// vec![Value::from_bytes(to_account_id), Value::u128(1u32.into())],
-	// 	vec![
-	// 		Value::unnamed_composite(vec![Value::from_bytes(to_account_id)]),
-	// 		Value::u128(1u32.into()),
-	// 	],
-	// )
-	// vec![
-	// 	// Value::unnamed_composite(vec![Value::from_bytes(to_account_id)]),
-	// 	Value::unnamed_variant("Id", [Value::from_bytes(to_account_id)]),
-	// 	Value::u128(1u32.into()),
-	// ],
 }
 
-pub fn build_eth_tx_payload(
+/// Crates a raw eth transaction.
+pub(crate) fn build_eth_tx_payload(
 	to_account_id: AccountId20,
 	recipe: &TransactionRecipe,
 ) -> DynamicPayload {
-	trace!(target:LOG_TARGET,to_account=hex::encode(to_account_id.clone()),"build_payload (eth)");
+	trace!(target:LOG_TARGET,to_account=hex::encode(to_account_id),"build_payload (eth)");
 	match recipe.call {
 		TransactionCall::Remark(s) => {
-			let i = hex::encode(to_account_id.clone()).as_bytes().last().copied().unwrap();
+			let i = hex::encode(to_account_id).as_bytes().last().copied().unwrap();
 			let data = vec![i; s as usize];
 			subxt::dynamic::tx("System", "remark", vec![data])
 		},
@@ -520,8 +497,9 @@ pub fn build_eth_tx_payload(
 	}
 }
 
-pub async fn build_subxt_tx<C, KP, G>(
-	account: &String,
+/// Builds a transaction with subxt.
+pub(crate) async fn build_subxt_tx<'a, C, KP, G>(
+	account: &'a str,
 	nonce: &Option<u128>,
 	sink: &SubxtTransactionsSink<C, KP>,
 	recipe: &TransactionRecipe,
@@ -566,7 +544,11 @@ where
 		"build_subxt_tx"
 	);
 
-	let tx_params = <SubstrateExtrinsicParamsBuilder<C>>::new().nonce(nonce as u64).build().into();
+	let tx_params = <SubstrateExtrinsicParamsBuilder<C>>::new()
+		.nonce(nonce as u64)
+		.tip(recipe.tip)
+		.build()
+		.into();
 	let tx_call = generate_payload(to_account_id, recipe);
 
 	let tx = SubxtTransaction::<C>::new(
@@ -585,18 +567,49 @@ where
 
 #[cfg(test)]
 mod tests {
-	// use super::*;
-	// use crate::init_logger;
-	// use futures::StreamExt;
-	// use subxt::{
-	// 	config::substrate::SubstrateExtrinsicParamsBuilder as Params, dynamic::Value, OnlineClient,
-	// };
-	// use subxt_signer::eth::dev;
-	// use tracing::info;
+	use subxt::SubstrateConfig;
+
+	use crate::{
+		subxt_transaction::{
+			derive_accounts, generate_sr25519_keypair, AccountGenerateRequest, SENDER_SEED,
+		},
+		transaction::AccountMetadata,
+	};
 
 	#[tokio::test]
-	async fn placeholder() -> Result<(), Box<dyn std::error::Error>> {
-		//todo add tests....
-		Ok(())
+	async fn test_derive_accounts_len() {
+		let accounts = derive_accounts::<SubstrateConfig, subxt_signer::sr25519::Keypair, _>(
+			crate::scenario::AccountsDescription::Derived(0..11),
+			SENDER_SEED,
+			generate_sr25519_keypair,
+		);
+		assert_eq!(accounts.len(), 11);
+		for (i, (kp, meta)) in accounts {
+			let id = i.parse::<u32>().unwrap();
+			assert_eq!(
+				kp.public_key().0,
+				generate_sr25519_keypair(AccountGenerateRequest::Derived(
+					SENDER_SEED.to_string(),
+					id
+				))
+				.public_key()
+				.0
+			);
+			assert_eq!(AccountMetadata::Derived(id), meta);
+		}
+
+		let accounts = derive_accounts::<SubstrateConfig, subxt_signer::sr25519::Keypair, _>(
+			crate::scenario::AccountsDescription::Keyring("alice".to_string()),
+			SENDER_SEED,
+			generate_sr25519_keypair,
+		);
+		assert_eq!(accounts.len(), 1);
+		assert_eq!(
+			accounts.get("alice").unwrap().0.public_key().0,
+			generate_sr25519_keypair(AccountGenerateRequest::Keyring("alice".to_string()))
+				.public_key()
+				.0
+		);
+		assert_eq!(accounts.get("alice").unwrap().1, AccountMetadata::KeyRing("alice".to_string()))
 	}
 }
