@@ -117,7 +117,7 @@ impl TransactionBuilder for FakeTransactionBuilder {
 		};
 		let mut nonces = sink.nonces.write();
 		let nonce = if let Some(nonce) = nonces.get_mut(&hex::encode(account)) {
-			*nonce = *nonce + 1;
+			*nonce += 1;
 			*nonce
 		} else {
 			nonces.insert(hex::encode(account), 0);
@@ -129,13 +129,13 @@ impl TransactionBuilder for FakeTransactionBuilder {
 			DefaultTxTask::<FakeTransaction>::new_watched(FakeTransaction::new_multiple(
 				i,
 				nonce,
-				vec![].into(),
+				vec![],
 			))
 		} else {
 			DefaultTxTask::<FakeTransaction>::new_watched(FakeTransaction::new_with_keyring(
 				"alice".to_string(),
 				nonce,
-				vec![].into(),
+				vec![],
 			))
 		}
 	}

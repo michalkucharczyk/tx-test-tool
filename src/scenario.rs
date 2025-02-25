@@ -204,6 +204,12 @@ pub struct ScenarioBuilder {
 	base_dir_path: Option<String>,
 }
 
+impl Default for ScenarioBuilder {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl ScenarioBuilder {
 	/// A default initializer of the builder, with a few defaults:
 	/// - `tx_recipe` is set to [`crate::transaction::TransactionCall::Transfer`]
@@ -291,7 +297,9 @@ impl ScenarioBuilder {
 
 	/// Allows to specify transaction tip. This indirectly controls priority of transaction.
 	pub fn with_tip(mut self, tip: u128) -> Self {
-		self.tx_recipe.as_mut().map(|r| r.tip = tip);
+		if let Some(r) = self.tx_recipe.as_mut() {
+			r.tip = tip
+		};
 		self.tip = tip;
 		self
 	}
@@ -366,7 +374,7 @@ impl ScenarioBuilder {
 		if let Some(start_id) = self.start_id {
 			let last_id = self.last_id.unwrap_or(start_id);
 			for account in start_id..=last_id {
-				let mut nonce = self.nonce_from.clone();
+				let mut nonce = self.nonce_from;
 				for _ in 0..self.txs_count {
 					tx_build_params
 						.push(TransactionBuildParams { account: account.to_string(), nonce });
@@ -374,7 +382,7 @@ impl ScenarioBuilder {
 				}
 			}
 		} else {
-			let mut nonce = self.nonce_from.clone();
+			let mut nonce = self.nonce_from;
 			let account = self
 				.account_id
 				.clone()
@@ -445,21 +453,19 @@ impl ScenarioBuilder {
 		let accounts_description = if let Some(start_id) = self.start_id {
 			let last_id = self.last_id.unwrap_or(start_id);
 			AccountsDescription::Derived(start_id..last_id + 1)
+		} else if let Some(account_description) = self
+			.account_id
+			.clone()
+			.and_then(|id| id.parse::<u32>().ok())
+			.map(|id| AccountsDescription::Derived(id..id + 1))
+		{
+			account_description
 		} else {
-			if let Some(account_description) = self
-				.account_id
-				.clone()
-				.and_then(|id| id.parse::<u32>().ok())
-				.map(|id| AccountsDescription::Derived(id..id + 1))
-			{
-				account_description
-			} else {
-				AccountsDescription::Keyring(
-					self.account_id
-						.clone()
-						.expect("to have configured an account id for transactions generation"),
-				)
-			}
+			AccountsDescription::Keyring(
+				self.account_id
+					.clone()
+					.expect("to have configured an account id for transactions generation"),
+			)
 		};
 
 		let installs_ctrlc_stop_hook = self.installs_ctrl_c_stop_hook;
@@ -485,7 +491,7 @@ impl ScenarioBuilder {
 					EthTransactionsSink,
 					DefaultResubmissionQueue<DefaultTxTask<EthTransaction>>,
 				>::new(
-					send_threshold as usize,
+					send_threshold,
 					sink,
 					txs.into_iter().rev().collect(),
 					queue,
