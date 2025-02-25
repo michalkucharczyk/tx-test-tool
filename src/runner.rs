@@ -352,13 +352,13 @@ where
 			.unwrap_or(format!("ttxt_{}.json", formatted_date));
 		self.base_dir_path
 			.as_ref()
-			.and_then(|basedir| {
+			.map(|basedir| {
 				let filename = self
 					.log_file_name
 					.as_ref()
 					.map(|filename| format!("{basedir}/{filename}_{}", formatted_date))
 					.unwrap_or(format!("{basedir}/{default_file_name}"));
-				Some(filename)
+				filename
 			})
 			.unwrap_or(default_file_name)
 	}
