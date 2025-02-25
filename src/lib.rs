@@ -1,3 +1,7 @@
+// Copyright (C) Parity Technologies (UK) Ltd.
+// This file is dual-licensed as Apache-2.0 or GPL-3.0.
+// see LICENSE for license details.
+
 //! The Transaction Test Tool is a library allowing to send transactions to a substrate network,
 //! monitor their status within the transaction pool. The main purpose of the library is to put a
 //! network under different scenarios and ensure transaction pool behaves as expected.

@@ -1,3 +1,7 @@
+// Copyright (C) Parity Technologies (UK) Ltd.
+// This file is dual-licensed as Apache-2.0 or GPL-3.0.
+// see LICENSE for license details.
+
 pub use jsonrpsee::{
 	client_transport::ws::{self, EitherStream, Url, WsTransportClientBuilder},
 	core::client::{Client, Error},

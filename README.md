@@ -149,5 +149,4 @@ Contributions to `txtt` are welcome! Feel free to open issues, submit pull reque
 
 ### License
 
-`txtt` is open-source and licensed under either of Apache License, Version 2.0 or MIT license.
-
+The entire code within this repository is dual licensed under the _GPL-3.0_ or _Apache-2.0_ licenses. See [the LICENSE](./LICENSE) file for more details.
