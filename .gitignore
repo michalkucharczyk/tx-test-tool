@@ -1,4 +1,5 @@
 /target
 **/out_*.json
+**/ttxt_*.json
 !out_20250206_151339.json
 .envrc
