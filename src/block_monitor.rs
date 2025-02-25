@@ -77,9 +77,9 @@ impl<C: subxt::Config> BlockMonitor<C> {
 					trigger.send(block_hash).unwrap();
 				}
 			}
-			info!(block_number, ?block_hash, extrinsics_count, "FINALIZED block");
+			info!(block_number, extrinsics_count, "FINALIZED block");
 		} else {
-			info!(block_number, ?block_hash, extrinsics_count, "     BEST block");
+			info!(block_number, extrinsics_count, "     BEST block");
 		}
 		Ok(())
 	}
