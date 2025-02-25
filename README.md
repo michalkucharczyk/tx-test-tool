@@ -1,6 +1,6 @@
 ## Transaction Testing Tool (`txtt`)
 
-`txtt` is a command-line interface (CLI) designed for testing a fork-aware transaction pool on substrate-based chains. It allows developers and testers to simulate various transaction scenarios monitor blocks, and inspect events for every transaction. `ttxt` is intended to be a main testing tool for transaction pool.
+`txtt` is a library and a command-line interface (CLI) designed for testing a transaction pool on substrate-based chains. It allows developers and testers to simulate various transaction scenarios monitor blocks, and inspect events for every transaction. `txtt` is intended to be a main testing tool for transaction pool.
 
 ### Main features:
 - single-account scenarios: send single or multiple transactions from a specific account,
@@ -74,7 +74,7 @@ This sends 10 transactions for every account with IDs ranging from 100 to 200, f
 ##### *Non-watched* vs. *watched* transaction
 
 
-`ttxt` by default sends *watched* transactions, meaning that every transaction will be sent using `submit_and_watch` and every status reported by node will be tracked (and stored in execution log):
+`txtt` by default sends *watched* transactions, meaning that every transaction will be sent using `submit_and_watch` and every status reported by node will be tracked (and stored in execution log):
 ```
 txtt tx from-single-account --account alice
 ```
@@ -147,7 +147,57 @@ txtt tx --ws ws://another-node:1234 one-shot --account alice
 
 Contributions to `txtt` are welcome! Feel free to open issues, submit pull requests, or suggest new features.
 
+#### Testing
+The test-suit is still to be done. Here is the list of testing scenarios:
+```
+# test stand-alone block monitor
+cargo run --release --  block-monitor
+
+# test nonce checker
+cargo run --release --  check-nonce --account 1
+cargo run --release --  check-nonce --account alice
+
+# test log loading
+cargo run --release -- load-log --show-graphs log_file.json
+
+# basic one-shot account scenarios
+cargo run --release -- tx --chain=sub one-shot --account 1
+cargo run --release -- tx --chain=sub one-shot --account alice
+cargo run --release -- tx --chain=sub --remark=50 one-shot --account alice
+
+cargo run --release -- tx --chain=sub --unwatched one-shot --account alice
+cargo run --release -- tx --chain=sub --unwatched --block-monitor one-shot --account alice
+
+# basic single account scenarios
+cargo run --release -- tx --chain=sub from-single-account --account alice
+cargo run --release -- tx --chain=sub from-single-account --account 1
+cargo run --release -- tx --chain=sub from-single-account --account 1 --count=1000
+cargo run --release -- tx --chain=sub --tip=50 one-shot --account alice
+
+# block monitor notifies finalization
+cargo run --release -- tx --chain=sub --unwatched --block-monitor from-single-account --account 1
+cargo run --release -- tx --chain=sub --unwatched --block-monitor from-single-account --account 1 --count=1000
+
+# future / ready - simple
+cargo run --release -- tx --chain=sub from-single-account --account 15000 --from 1
+cargo run --release -- tx --chain=sub from-single-account --account 15000 --from 0
+
+# future / ready
+cargo run --release -- tx --chain=sub from-single-account --account 15001 --from 100 --count 100
+cargo run --release -- tx --chain=sub from-single-account --account 15001 --from 0 --count 100
+
+# priority is properly handled
+cargo run --release -- tx --chain=sub from-single-account --account 15001 --from 100 --count 100
+cargo run --release -- tx --chain=sub --tip=100 from-single-account --account 15001 --from 100 --count 100
+cargo run --release -- tx --chain=sub from-single-account --account 15001 --from 0 --count 100
+
+# remark transaction
+cargo run --release -- tx --chain=sub --send-threshold 200 --unwatched --block-monitor --remark 50 from-many-accounts --start-id 1 --last-id 1000 --count 2
+
+# quite heavy spamming (block filling)
+cargo run --release -- tx --chain=sub --send-threshold 20000 from-many-accounts --start-id 1 --last-id 100 --count 1000
+```
+
 ### License
 
-`txtt` is open-source and licensed under either of Apache License, Version 2.0 or MIT license.
-
+The entire code within this repository is dual licensed under the _GPL-3.0_ or _Apache-2.0_ licenses. See [the LICENSE](./LICENSE) file for more details.

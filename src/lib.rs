@@ -1,38 +1,41 @@
-//! # Transaction Test Tool
+// Copyright (C) Parity Technologies (UK) Ltd.
+// This file is dual-licensed as Apache-2.0 or GPL-3.0.
+// see LICENSE for license details.
+
+//! The Transaction Test Tool is a library allowing to send transactions to a substrate network,
+//! monitor their status within the transaction pool. The main purpose of the library is to put a
+//! network under different scenarios and ensure transaction pool behaves as expected.
 //!
-//! This is an experimental library that can be used to send transactions
-//! to a substrate network and monitor them in terms of how many have been
-//! submitted to the transaction pool, validated, broadcasted, inlcluded in blocks,
-//! finalized, invalid or dropped. The main purpose of the library is to put under a network under
-//! different scenarios and ensure transaction pool behaves as expected.
+//! Additionally, there is a companion command-line interface (CLI) that offers an alternative
+//! means of utilizing the library's capabilities.
 //!
-//! There is an associated binary that can be used as a CLI, an alternative to using
-//! the library.
+//! Use [`scenario::ScenarioBuilder`] to create a [`scenario::ScenarioExecutor`] instance, which
+//! then executes the scenario against the node.
 //!
 //! Example:
 //!
 //! ```rust,ignore
 //!     // Shared Params
-//! 	let send_threshold = 20_000;
-//! 	let ws = "ws://127.0.0.1:9933";
-//! 	let block_monitor = false;
-//! 	let watched_txs = true;
+//!     let send_threshold = 20_000;
+//!     let ws = "ws://127.0.0.1:9933";
+//!     let block_monitor = false;
+//!     let watched_txs = true;
 //!
 //!     // Setup for scenario executor
-//! 	let scenario_executor = ScenarioBuilder::new()
-//! 		.with_rpc_uri(ws.to_string())
-//! 		.with_chain_type(ChainType::Sub)
-//! 		.with_block_monitoring(block_monitor)
-//! 		.with_start_id("0".to_string())
-//! 		.with_last_id(99)
-//! 		.with_nonce_from(Some(0))
-//! 		.with_txs_count(100)
-//! 		.with_watched_txs(watched_txs)
-//! 		.with_send_threshold(send_threshold)
-//! 		.build()
-//! 		.await;
+//!     let scenario_executor = ScenarioBuilder::new()
+//!         .with_rpc_uri(ws.to_string())
+//!         .with_chain_type(ChainType::Sub)
+//!         .with_block_monitoring(block_monitor)
+//!         .with_start_id("0".to_string())
+//!         .with_last_id(99)
+//!         .with_nonce_from(Some(0))
+//!         .with_txs_count(100)
+//!         .with_watched_txs(watched_txs)
+//!         .with_send_threshold(send_threshold)
+//!         .build()
+//!         .await;
 //!
-//! 	let logs = scenario_executor.execute().await;
+//!     let logs = scenario_executor.execute().await;
 //! ```
 
 pub mod block_monitor;

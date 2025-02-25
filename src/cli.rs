@@ -1,3 +1,7 @@
+// Copyright (C) Parity Technologies (UK) Ltd.
+// This file is dual-licensed as Apache-2.0 or GPL-3.0.
+// see LICENSE for license details.
+
 use clap::{Parser, Subcommand};
 
 use crate::scenario::{ChainType, ScenarioType};

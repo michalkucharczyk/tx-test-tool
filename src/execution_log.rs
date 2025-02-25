@@ -1,3 +1,7 @@
+// Copyright (C) Parity Technologies (UK) Ltd.
+// This file is dual-licensed as Apache-2.0 or GPL-3.0.
+// see LICENSE for license details.
+
 use crate::{
 	error::Error,
 	runner::{TxTask, TxTaskHash},
@@ -143,52 +147,105 @@ impl Counters {
 /// Type alias for a dictionary of execution logs.
 pub type Logs<T> = HashMap<TxTaskHash<T>, Arc<TransactionExecutionLog<TxTaskHash<T>>>>;
 
-/// Interface for log recording.
+/// Trait for accessing transaction log recording.
 pub trait ExecutionLog: Sync + Send {
 	type HashType: BlockHash;
 
+	/// Records an execution event associated with the transaction.
 	fn push_event(&self, event: ExecutionEvent<Self::HashType>);
 
-	// all methods used for generating stats:
+	/// Returns the hash of the transaction.
 	fn hash(&self) -> Self::HashType;
+	/// Returns the nonce of the transaction.
 	fn nonce(&self) -> u128;
+	/// Retrieves account metadata associated with the transaction.
 	fn account_metadata(&self) -> AccountMetadata;
 
+	/// Returns a list of block hashes where the transaction was included.
 	fn in_blocks(&self) -> Vec<Self::HashType>;
+
+	/// Returns the hash of the finalized block, if available.
 	fn finalized(&self) -> Option<Self::HashType>;
+
+	/// Determines if the transaction's progress is being monitored. If not, some events are not
+	/// available.
 	fn is_watched(&self) -> bool;
 
+	/// Returns the duration from submission to result reception, if applicable.
 	fn time_to_result(&self) -> Option<Duration>;
+
+	/// Returns the duration from submission to validation event.
 	fn time_to_validated(&self) -> Option<Duration>;
+
+	/// Returns the duration from submission to broadcasted event.
 	fn time_to_broadcasted(&self) -> Option<Duration>;
+
+	/// Returns the duration from submission to finalization.
 	fn time_to_finalized(&self) -> Option<Duration>;
+
+	/// Returns the duration from submission to being included in a block.
 	fn time_to_inblock(&self) -> Option<Duration>;
+
+	/// Returns a list of durations for each inclusion in a block.
 	fn times_to_inblock(&self) -> Option<Vec<Duration>>;
+
+	/// Returns the duration from submission to drop event.
 	fn time_to_dropped(&self) -> Option<Duration>;
+
+	/// Returns the duration from submission to invalidation.
 	fn time_to_invalid(&self) -> Option<Duration>;
+
+	/// Returns the duration from submission to error occurrence.
 	fn time_to_error(&self) -> Option<Duration>;
+
+	/// Returns the duration from submission to resubmission.
 	fn time_to_resubmitted(&self) -> Option<Duration>;
+
+	/// Returns the duration to finalization as monitored by an external observer.
 	fn time_to_finalized_monitor(&self) -> Option<Duration>;
 
+	/// Retrieves reasons for invalidation of the transaction.
 	fn get_invalid_reason(&self) -> Vec<String>;
+
+	/// Retrieves error reasons encountered during transaction execution.
 	fn get_error_reason(&self) -> Vec<String>;
+
+	/// Retrieves reasons for dropping the transaction.
 	fn get_dropped_reason(&self) -> Vec<String>;
+
+	/// Returns the number of times the transaction has been resent.
 	fn get_resent_count(&self) -> u32;
 
+	/// Retrieves errors from the submit result, if any.
 	fn get_submit_result_error(&self) -> Vec<String>;
+
+	/// Retrieves errors from the submit and watch result, if any. Works for watched transaction
+	/// only.
 	fn get_submit_and_watch_result_error(&self) -> Vec<String>;
 
+	/// Returns a string representation of in-pool events.
+	///
+	/// Examples:
+	/// `VbBBI` - Validated, Broadcasted, InBlock, InBlock, Invalid
+	/// `VbBF` - Validated, Broadcasted, InBlock, Finalized
 	fn get_inpool_events_string(&self) -> String;
+
+	/// Returns the system time when the transaction was sent, if available.
 	fn get_sent_time(&self) -> Option<SystemTime>;
 }
 
 #[derive(Debug)]
-/// A default implementation of an execution log.
+/// Represents transaction execution log, provides all events assocaited with given transaction.
 pub struct TransactionExecutionLog<H: BlockHash> {
+	/// All events recorded for the transaction.
 	events: RwLock<Vec<ExecutionEvent<H>>>,
+	/// Contains all account metadata.
 	account_metadata: AccountMetadata,
+	/// Nonce of the transaction.
 	nonce: u128,
+	/// Hash of the transaction.
 	hash: H,
+	/// Shared instance of global events counter.
 	total_counters: Arc<Counters>,
 }
 
