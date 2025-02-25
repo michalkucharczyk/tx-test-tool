@@ -3,6 +3,8 @@ name = "substrate-txtesttool"
 version = "0.1.0"
 edition = "2021"
 description = "A library and CLI tool for sending transactions to substrate-based chains, enabling developers to test and monitor transaction scenarios."
+license = "Apache-2.0 OR GPL-3.0"
+repository = "https://github.com/michalkucharczyk/tx-test-tool"
 
 [[bin]]
 name = "txtt"
