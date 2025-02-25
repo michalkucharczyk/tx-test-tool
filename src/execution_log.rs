@@ -77,6 +77,7 @@ pub struct Counters {
 
 	ts_validated: AtomicUsize,
 	ts_broadcasted: AtomicUsize,
+	ts_in_block: AtomicUsize,
 	ts_finalized: AtomicUsize,
 	ts_dropped: AtomicUsize,
 	ts_invalid: AtomicUsize,
@@ -88,13 +89,14 @@ impl Display for Counters {
 		// let buffered = self.buffered();
 		write!(
 			f,
-			"p {:7} s:{:7} {:7}/{:7} v:{:7} b{:7} f:{:7} d:{:7} i:{:7}",
+			"p {:7} s:{:7} {:7}/{:7} v:{:7} b{:7} B:{:7} f:{:7} d:{:7} i:{:7}",
 			self.popped.load(Ordering::Relaxed),
 			self.sent.load(Ordering::Relaxed),
 			self.submit_and_watch_success.load(Ordering::Relaxed),
 			self.submit_and_watch_error.load(Ordering::Relaxed),
 			self.ts_validated.load(Ordering::Relaxed),
 			self.ts_broadcasted.load(Ordering::Relaxed),
+			self.ts_in_block.load(Ordering::Relaxed),
 			self.ts_finalized.load(Ordering::Relaxed),
 			self.ts_dropped.load(Ordering::Relaxed),
 			self.ts_invalid.load(Ordering::Relaxed),
@@ -133,8 +135,10 @@ impl Counters {
 				TransactionStatus::Dropped(_) => Self::inc(&self.ts_dropped),
 				TransactionStatus::Invalid(_) => Self::inc(&self.ts_invalid),
 				TransactionStatus::Error(_) => Self::inc(&self.ts_error),
-				TransactionStatus::NoLongerInBestBlock | TransactionStatus::InBlock(_) => {},
+				TransactionStatus::InBlock(_) => Self::inc(&self.ts_in_block),
+				TransactionStatus::NoLongerInBestBlock => {},
 			},
+			ExecutionEvent::Resubmitted(_) => {},
 		}
 	}
 }
@@ -294,7 +298,15 @@ impl<H: BlockHash + 'static> ExecutionLog for TransactionExecutionLog<H> {
 
 	fn push_event(&self, event: ExecutionEvent<Self::HashType>) {
 		debug!(target:LOG_TARGET, ?event, "B push_event");
-		self.total_counters.count_event(&event);
+		if match event {
+			// note: dedup in block events - on the stats line we want to see transactions included,
+			// not events count
+			ExecutionEvent::TxPoolEvent(_, TransactionStatus::InBlock(_)) =>
+				self.in_blocks().is_empty(),
+			_ => true,
+		} {
+			self.total_counters.count_event(&event);
+		}
 		self.events.write().push(event);
 		trace!(target:LOG_TARGET, "A push_event");
 	}
