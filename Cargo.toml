@@ -6,7 +6,7 @@ description = "A library and CLI tool for sending transactions to substrate-base
 
 [[bin]]
 name = "txtt"
-path = "src/main.rs"
+path = "bin/main.rs"
 
 [dependencies]
 async-trait = "0.1.81"

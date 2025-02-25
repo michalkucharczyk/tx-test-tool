@@ -2,6 +2,8 @@
 // This file is dual-licensed as Apache-2.0 or GPL-3.0.
 // see LICENSE for license details.
 
+//! Provides transactions sending scenarios together with associated builders and executors.
+
 use std::{collections::HashMap, ops::Range, sync::Arc};
 
 use clap::{Subcommand, ValueEnum};
@@ -50,9 +52,9 @@ pub enum ChainType {
 }
 
 #[derive(Subcommand, Clone)]
-/// Send transactions to the node using different scenarios.
+/// This enum represents different transactions sending scenarios.
 pub enum ScenarioType {
-	/// Send single transactions to the node.
+	/// Send single transaction to the node.
 	OneShot {
 		/// Account identifier to be used. It can be keyring account (alice, bob,...) or number of
 		/// pre-funded account, index used for derivation.
@@ -144,8 +146,13 @@ pub enum ScenarioExecutor {
 }
 
 impl ScenarioExecutor {
-	/// Executes the set of tasks following a transaction on chain until a final state
-	/// [`transaction::TransactionStatusIsDone`] is reached.
+	/// Executes the encapsulated scenario to send out transactions.
+	///
+	/// Executes the set of transaction sending tasks, and follows a transaction status on the node
+	/// side until a final state is reached.
+	///
+	/// It returns a mapping of transaction hashes to their respective execution log entries,
+	/// providing a detailed view of the transaction's execution process.
 	pub async fn execute(self) -> HashMap<H256, Arc<TransactionExecutionLog<H256>>> {
 		match self {
 			ScenarioExecutor::Eth(mut inner) => {
@@ -282,52 +289,66 @@ impl ScenarioBuilder {
 		self
 	}
 
+	/// Allows to specify transaction tip. This indirectly controls priority of transaction.
 	pub fn with_tip(mut self, tip: u128) -> Self {
 		self.tx_recipe.as_mut().map(|r| r.tip = tip);
 		self.tip = tip;
 		self
 	}
 
+	/// Spawns block monitor. Allows to monitor the transaction finalization status for unwatched
+	/// transactions.
 	pub fn with_block_monitoring(mut self, does_block_monitoring: bool) -> Self {
 		self.does_block_monitoring = does_block_monitoring;
 		self
 	}
 
+	/// Defines the URI of the node where transactions are dispatched.
 	pub fn with_rpc_uri(mut self, rpc_uri: String) -> Self {
 		self.rpc_uri = Some(rpc_uri);
 		self
 	}
 
+	/// Send transactions using `submit_and_watch` method. Progress of all transcations will be
+	/// monitored. If using unwatched transaction `Self::with_block_monitoring` may be useful for
+	/// tracking finalization of transactions.
 	pub fn with_watched_txs(mut self, watched_txs: bool) -> Self {
 		self.watched_txs = watched_txs;
 		self
 	}
 
+	/// Allows to specify the chain type.
 	pub fn with_chain_type(mut self, chain_type: ChainType) -> Self {
 		self.chain_type = Some(chain_type);
 		self
 	}
 
+	/// Specifies how many transactions in transaction pool on the node side will be maintained at
+	/// the fork of the best chain.
 	pub fn with_send_threshold(mut self, send_threshold: usize) -> Self {
 		self.send_threshold = Some(send_threshold);
 		self
 	}
 
+	/// If specified, the stats will be printed when `stop` signal is sent to process.
 	pub fn with_installed_ctrlc_stop_hook(mut self, installs_ctrl_c_stop_hook: bool) -> Self {
 		self.installs_ctrl_c_stop_hook = installs_ctrl_c_stop_hook;
 		self
 	}
 
+	/// Defines the log prefix for the executor instance being built.
 	pub fn with_executor_id(mut self, executor_id: String) -> Self {
 		self.executor_id = Some(executor_id);
 		self
 	}
 
+	/// Defines the prefix of the log name.
 	pub fn with_log_file_name_prefix(mut self, log_file_name_prefix: String) -> Self {
 		self.log_file_name_prefix = Some(log_file_name_prefix);
 		self
 	}
 
+	/// Defines the path of the directory where the log file will be stored.
 	pub fn with_base_dir_path(mut self, base_dir_path: String) -> Self {
 		self.base_dir_path = Some(base_dir_path);
 		self

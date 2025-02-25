@@ -9,30 +9,33 @@
 //! Additionally, there is a companion command-line interface (CLI) that offers an alternative
 //! means of utilizing the library's capabilities.
 //!
+//! Use [`scenario::ScenarioBuilder`] to create a [`scenario::ScenarioExecutor`] instance, which
+//! then executes the scenario against the node.
+//!
 //! Example:
 //!
 //! ```rust,ignore
 //!     // Shared Params
-//! 	let send_threshold = 20_000;
-//! 	let ws = "ws://127.0.0.1:9933";
-//! 	let block_monitor = false;
-//! 	let watched_txs = true;
+//!     let send_threshold = 20_000;
+//!     let ws = "ws://127.0.0.1:9933";
+//!     let block_monitor = false;
+//!     let watched_txs = true;
 //!
 //!     // Setup for scenario executor
-//! 	let scenario_executor = ScenarioBuilder::new()
-//! 		.with_rpc_uri(ws.to_string())
-//! 		.with_chain_type(ChainType::Sub)
-//! 		.with_block_monitoring(block_monitor)
-//! 		.with_start_id("0".to_string())
-//! 		.with_last_id(99)
-//! 		.with_nonce_from(Some(0))
-//! 		.with_txs_count(100)
-//! 		.with_watched_txs(watched_txs)
-//! 		.with_send_threshold(send_threshold)
-//! 		.build()
-//! 		.await;
+//!     let scenario_executor = ScenarioBuilder::new()
+//!         .with_rpc_uri(ws.to_string())
+//!         .with_chain_type(ChainType::Sub)
+//!         .with_block_monitoring(block_monitor)
+//!         .with_start_id("0".to_string())
+//!         .with_last_id(99)
+//!         .with_nonce_from(Some(0))
+//!         .with_txs_count(100)
+//!         .with_watched_txs(watched_txs)
+//!         .with_send_threshold(send_threshold)
+//!         .build()
+//!         .await;
 //!
-//! 	let logs = scenario_executor.execute().await;
+//!     let logs = scenario_executor.execute().await;
 //! ```
 
 pub mod block_monitor;

@@ -187,12 +187,17 @@ pub trait ExecutionLog: Sync + Send {
 }
 
 #[derive(Debug)]
-/// A default implementation of an execution log.
+/// Represents transaction execution log, provides all events assocaited with given transaction.
 pub struct TransactionExecutionLog<H: BlockHash> {
+	/// All events recorded for the transaction.
 	events: RwLock<Vec<ExecutionEvent<H>>>,
+	/// Contains all account metadata.
 	account_metadata: AccountMetadata,
+	/// Nonce of the transaction.
 	nonce: u128,
+	/// Hash of the transaction.
 	hash: H,
+	/// Shared instance of global events counter.
 	total_counters: Arc<Counters>,
 }
 
