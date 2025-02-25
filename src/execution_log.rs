@@ -42,9 +42,6 @@ pub enum ExecutionEvent<H> {
 impl<H: BlockHash + DeserializeOwned + std::fmt::Debug> ExecutionEvent<H> {}
 
 impl<H: BlockHash> ExecutionEvent<H> {
-	pub fn resubmitted() -> Self {
-		Self::Resubmitted(SystemTime::now())
-	}
 	pub fn popped() -> Self {
 		Self::Popped(SystemTime::now())
 	}
@@ -72,7 +69,6 @@ impl<H: BlockHash> From<TransactionStatus<H>> for ExecutionEvent<H> {
 pub struct Counters {
 	popped: AtomicUsize,
 	sent: AtomicUsize,
-	resubmitted: AtomicUsize,
 	submit_success: AtomicUsize,
 	submit_error: AtomicUsize,
 	submit_and_watch_success: AtomicUsize,
@@ -123,7 +119,6 @@ impl Counters {
 		match event {
 			ExecutionEvent::Popped(_) => Self::inc(&self.popped),
 			ExecutionEvent::Sent(_) => Self::inc(&self.sent),
-			ExecutionEvent::Resubmitted(_) => Self::inc(&self.resubmitted),
 			ExecutionEvent::SubmitResult(_, Ok(_)) => Self::inc(&self.submit_success),
 			ExecutionEvent::SubmitResult(_, Err(_)) => Self::inc(&self.submit_error),
 			ExecutionEvent::SubmitAndWatchResult(_, Ok(_)) =>
@@ -197,9 +192,6 @@ pub trait ExecutionLog: Sync + Send {
 
 	/// Returns the duration from submission to error occurrence.
 	fn time_to_error(&self) -> Option<Duration>;
-
-	/// Returns the duration from submission to resubmission.
-	fn time_to_resubmitted(&self) -> Option<Duration>;
 
 	/// Returns the duration to finalization as monitored by an external observer.
 	fn time_to_finalized_monitor(&self) -> Option<Duration>;
@@ -394,14 +386,6 @@ impl<H: BlockHash + 'static> ExecutionLog for TransactionExecutionLog<H> {
 		Self::duration_since_timestamp(self.get_sent_time_stamp(), dts)
 	}
 
-	fn time_to_resubmitted(&self) -> Option<Duration> {
-		let dts = self.events.read().iter().find_map(|e| match e {
-			ExecutionEvent::Resubmitted(i) => Some(*i),
-			_ => None,
-		});
-		Self::duration_since_timestamp(self.get_sent_time_stamp(), dts)
-	}
-
 	fn time_to_invalid(&self) -> Option<Duration> {
 		let its = self.events.read().iter().find_map(|e| match e {
 			ExecutionEvent::TxPoolEvent(i, TransactionStatus::Invalid(_)) => Some(*i),
@@ -582,7 +566,6 @@ pub fn make_stats<E: ExecutionLog>(logs: impl IntoIterator<Item = Arc<E>>, show_
 		E::time_to_finalized_monitor,
 		show_graphs,
 	);
-	single_stat("Time to resubmitted".into(), logs.iter(), E::time_to_resubmitted, show_graphs);
 
 	failure_reason_stats("Dropped".into(), logs.iter(), E::get_dropped_reason);
 	failure_reason_stats("Error".into(), logs.iter(), E::get_error_reason);

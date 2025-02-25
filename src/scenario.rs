@@ -14,15 +14,14 @@ use tokio::sync::mpsc::Sender;
 use crate::{
 	block_monitor::BlockMonitor,
 	execution_log::TransactionExecutionLog,
-	resubmission::{DefaultResubmissionQueue, ResubmissionQueueTask},
 	runner::{DefaultTxTask, Runner, TxTask},
 	subxt_transaction::{
 		generate_ecdsa_keypair, generate_sr25519_keypair, EthTransaction, EthTransactionsSink,
 		SubstrateTransaction, SubstrateTransactionsSink,
 	},
 	transaction::{
-		EthTransactionBuilder, ResubmitHandler, SubstrateTransactionBuilder, Transaction,
-		TransactionBuilder, TransactionRecipe, TransactionsSink,
+		EthTransactionBuilder, SubstrateTransactionBuilder, Transaction, TransactionBuilder,
+		TransactionRecipe, TransactionsSink,
 	},
 };
 
@@ -97,45 +96,28 @@ pub enum ScenarioType {
 	},
 }
 
-pub type EthScenarioRunner = Runner<
-	DefaultTxTask<EthTransaction>,
-	EthTransactionsSink,
-	DefaultResubmissionQueue<DefaultTxTask<EthTransaction>>,
->;
+pub type EthScenarioRunner = Runner<DefaultTxTask<EthTransaction>, EthTransactionsSink>;
 pub struct EthScenarioExecutor {
 	stop_sender: Sender<()>,
 	runner: EthScenarioRunner,
-	resubmission_queue: ResubmissionQueueTask,
 }
 
-pub type SubstrateScenarioRunner = Runner<
-	DefaultTxTask<SubstrateTransaction>,
-	SubstrateTransactionsSink,
-	DefaultResubmissionQueue<DefaultTxTask<SubstrateTransaction>>,
->;
+pub type SubstrateScenarioRunner =
+	Runner<DefaultTxTask<SubstrateTransaction>, SubstrateTransactionsSink>;
 pub struct SubstrateScenarioExecutor {
 	stop_sender: Sender<()>,
 	runner: SubstrateScenarioRunner,
-	resubmission_queue: ResubmissionQueueTask,
 }
 
 impl SubstrateScenarioExecutor {
-	pub(crate) fn new(
-		stop_sender: Sender<()>,
-		runner: SubstrateScenarioRunner,
-		resubmission_queue: ResubmissionQueueTask,
-	) -> Self {
-		SubstrateScenarioExecutor { stop_sender, runner, resubmission_queue }
+	pub(crate) fn new(stop_sender: Sender<()>, runner: SubstrateScenarioRunner) -> Self {
+		SubstrateScenarioExecutor { stop_sender, runner }
 	}
 }
 
 impl EthScenarioExecutor {
-	pub(crate) fn new(
-		stop_sender: Sender<()>,
-		runner: EthScenarioRunner,
-		resubmission_queue: ResubmissionQueueTask,
-	) -> Self {
-		EthScenarioExecutor { stop_sender, runner, resubmission_queue }
+	pub(crate) fn new(stop_sender: Sender<()>, runner: EthScenarioRunner) -> Self {
+		EthScenarioExecutor { stop_sender, runner }
 	}
 }
 
@@ -155,16 +137,8 @@ impl ScenarioExecutor {
 	/// providing a detailed view of the transaction's execution process.
 	pub async fn execute(self) -> HashMap<H256, Arc<TransactionExecutionLog<H256>>> {
 		match self {
-			ScenarioExecutor::Eth(mut inner) => {
-				let (_, logs) =
-					futures::future::join(inner.resubmission_queue, inner.runner.run()).await;
-				logs
-			},
-			ScenarioExecutor::Substrate(mut inner) => {
-				let (_, logs) =
-					futures::future::join(inner.resubmission_queue, inner.runner.run()).await;
-				logs
-			},
+			ScenarioExecutor::Eth(mut inner) => inner.runner.run().await,
+			ScenarioExecutor::Substrate(mut inner) => inner.runner.run().await,
 		}
 	}
 
@@ -366,7 +340,7 @@ impl ScenarioBuilder {
 	async fn build_transactions<H, T, S, B>(&self, builder: B, sink: S) -> Vec<DefaultTxTask<T>>
 	where
 		H: BlockHash + 'static,
-		T: Transaction<HashType = H> + ResubmitHandler + Send + 'static,
+		T: Transaction<HashType = H> + Send + 'static,
 		S: TransactionsSink<H> + 'static + Clone,
 		B: TransactionBuilder<HashType = H, Transaction = T, Sink = S> + Send + Sync + 'static,
 	{
@@ -485,25 +459,16 @@ impl ScenarioBuilder {
 					);
 				let sink = new_with_uri_with_accounts_description.await;
 				let txs = self.build_transactions(builder, sink.clone()).await;
-				let (queue, queue_task) = DefaultResubmissionQueue::new();
-				let (stop_sender, runner) = Runner::<
-					DefaultTxTask<EthTransaction>,
-					EthTransactionsSink,
-					DefaultResubmissionQueue<DefaultTxTask<EthTransaction>>,
-				>::new(
-					send_threshold,
-					sink,
-					txs.into_iter().rev().collect(),
-					queue,
-					self.log_file_name_prefix,
-					self.base_dir_path,
-					self.executor_id,
-				);
-				let executor = ScenarioExecutor::Eth(EthScenarioExecutor::new(
-					stop_sender,
-					runner,
-					queue_task,
-				));
+				let (stop_sender, runner) =
+					Runner::<DefaultTxTask<EthTransaction>, EthTransactionsSink>::new(
+						send_threshold,
+						sink,
+						txs.into_iter().rev().collect(),
+						self.log_file_name_prefix,
+						self.base_dir_path,
+						self.executor_id,
+					);
+				let executor = ScenarioExecutor::Eth(EthScenarioExecutor::new(stop_sender, runner));
 				installs_ctrlc_stop_hook.then(|| executor.install_ctrlc_stop_hook());
 				executor
 			},
@@ -521,25 +486,19 @@ impl ScenarioBuilder {
 				)
 				.await;
 				let txs = self.build_transactions(builder, sink.clone()).await;
-				let (queue, queue_task) = DefaultResubmissionQueue::new();
-				let (stop_sender, runner) = Runner::<
-					DefaultTxTask<SubstrateTransaction>,
-					SubstrateTransactionsSink,
-					DefaultResubmissionQueue<DefaultTxTask<SubstrateTransaction>>,
-				>::new(
-					send_threshold,
-					sink,
-					txs.into_iter().rev().collect(),
-					queue,
-					self.log_file_name_prefix,
-					self.base_dir_path,
-					self.executor_id,
-				);
+				let (stop_sender, runner) =
+					Runner::<DefaultTxTask<SubstrateTransaction>, SubstrateTransactionsSink>::new(
+						send_threshold,
+						sink,
+						txs.into_iter().rev().collect(),
+						self.log_file_name_prefix,
+						self.base_dir_path,
+						self.executor_id,
+					);
 
 				let executor = ScenarioExecutor::Substrate(SubstrateScenarioExecutor::new(
 					stop_sender,
 					runner,
-					queue_task,
 				));
 				installs_ctrlc_stop_hook.then(|| executor.install_ctrlc_stop_hook());
 				executor
