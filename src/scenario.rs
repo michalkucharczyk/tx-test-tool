@@ -4,7 +4,7 @@
 
 //! Provides transactions sending scenarios together with associated builders and executors.
 
-use std::{collections::HashMap, ops::Range, sync::Arc};
+use std::{collections::HashMap, ops::Range, sync::Arc, time::Duration};
 
 use clap::{Subcommand, ValueEnum};
 use futures::executor::block_on;
@@ -104,6 +104,7 @@ pub type EthScenarioRunner = Runner<
 >;
 pub struct EthScenarioExecutor {
 	stop_sender: Sender<()>,
+	timeout: Option<Duration>,
 	runner: EthScenarioRunner,
 	resubmission_queue: ResubmissionQueueTask,
 }
@@ -115,6 +116,7 @@ pub type SubstrateScenarioRunner = Runner<
 >;
 pub struct SubstrateScenarioExecutor {
 	stop_sender: Sender<()>,
+	timeout: Option<Duration>,
 	runner: SubstrateScenarioRunner,
 	resubmission_queue: ResubmissionQueueTask,
 }
@@ -122,20 +124,22 @@ pub struct SubstrateScenarioExecutor {
 impl SubstrateScenarioExecutor {
 	pub(crate) fn new(
 		stop_sender: Sender<()>,
+		timeout: Option<Duration>,
 		runner: SubstrateScenarioRunner,
 		resubmission_queue: ResubmissionQueueTask,
 	) -> Self {
-		SubstrateScenarioExecutor { stop_sender, runner, resubmission_queue }
+		SubstrateScenarioExecutor { stop_sender, timeout, runner, resubmission_queue }
 	}
 }
 
 impl EthScenarioExecutor {
 	pub(crate) fn new(
 		stop_sender: Sender<()>,
+		timeout: Option<Duration>,
 		runner: EthScenarioRunner,
 		resubmission_queue: ResubmissionQueueTask,
 	) -> Self {
-		EthScenarioExecutor { stop_sender, runner, resubmission_queue }
+		EthScenarioExecutor { stop_sender, timeout, runner, resubmission_queue }
 	}
 }
 
@@ -153,16 +157,32 @@ impl ScenarioExecutor {
 	///
 	/// It returns a mapping of transaction hashes to their respective execution log entries,
 	/// providing a detailed view of the transaction's execution process.
+	///
+	/// It is subject to the configured timeout, and if it will be reached, will return a subset of
+	/// the execution logs.
 	pub async fn execute(self) -> HashMap<H256, Arc<TransactionExecutionLog<H256>>> {
+		let stop_trigger = |timeout, stop_sender: Sender<()>| async move {
+			if let Some(duration) = timeout {
+				tokio::time::sleep(duration).await;
+				let _ = stop_sender.send(()).await;
+			}
+		};
+
 		match self {
 			ScenarioExecutor::Eth(mut inner) => {
-				let (_, logs) =
-					futures::future::join(inner.resubmission_queue, inner.runner.run()).await;
+				let (_, _, logs) = tokio::join!(
+					stop_trigger(inner.timeout, inner.stop_sender),
+					inner.resubmission_queue,
+					inner.runner.run(),
+				);
 				logs
 			},
 			ScenarioExecutor::Substrate(mut inner) => {
-				let (_, logs) =
-					futures::future::join(inner.resubmission_queue, inner.runner.run()).await;
+				let (_, _, logs) = tokio::join!(
+					stop_trigger(inner.timeout, inner.stop_sender),
+					inner.resubmission_queue,
+					inner.runner.run(),
+				);
 				logs
 			},
 		}
@@ -202,6 +222,7 @@ pub struct ScenarioBuilder {
 	tip: u128,
 	log_file_name_prefix: Option<String>,
 	base_dir_path: Option<String>,
+	timeout: Option<Duration>,
 }
 
 impl Default for ScenarioBuilder {
@@ -234,6 +255,7 @@ impl ScenarioBuilder {
 			tip: 0,
 			log_file_name_prefix: None,
 			base_dir_path: None,
+			timeout: None,
 		}
 	}
 
@@ -341,6 +363,13 @@ impl ScenarioBuilder {
 	/// If specified, the stats will be printed when `stop` signal is sent to process.
 	pub fn with_installed_ctrlc_stop_hook(mut self, installs_ctrl_c_stop_hook: bool) -> Self {
 		self.installs_ctrl_c_stop_hook = installs_ctrl_c_stop_hook;
+		self
+	}
+
+	/// If specified, a timeout will be applied for the scenario transaction execution, making
+	/// the executor return with execution logs until the timeout is reached.
+	pub fn with_timeout_in_secs(mut self, secs: u64) -> Self {
+		self.timeout = Some(Duration::from_secs(secs));
 		self
 	}
 
@@ -501,6 +530,7 @@ impl ScenarioBuilder {
 				);
 				let executor = ScenarioExecutor::Eth(EthScenarioExecutor::new(
 					stop_sender,
+					self.timeout,
 					runner,
 					queue_task,
 				));
@@ -538,6 +568,7 @@ impl ScenarioBuilder {
 
 				let executor = ScenarioExecutor::Substrate(SubstrateScenarioExecutor::new(
 					stop_sender,
+					self.timeout,
 					runner,
 					queue_task,
 				));
