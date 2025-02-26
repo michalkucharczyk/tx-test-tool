@@ -349,8 +349,11 @@ impl ScenarioBuilder {
 		self
 	}
 
-	/// If specified, a timeout will be applied for the scenario transaction execution, making
-	/// the executor return with execution logs until the timeout is reached.
+	/// Sets a maximum duration for the scenario execution.  
+	/// If specified, execution will be limited to the given timeout, ensuring  
+	/// the executor returns with logs if the duration is reached.  
+	/// Typically, the scenario will complete earlier, but the timeout acts  
+	/// as a safeguard to prevent indefinite execution.	
 	pub fn with_timeout_in_secs(mut self, secs: u64) -> Self {
 		self.timeout = Some(Duration::from_secs(secs));
 		self
