@@ -223,6 +223,7 @@ pub struct Runner<T: TxTask, Sink: TransactionsSink<TxTaskHash<T>>, Queue: Resub
 	rpc: Arc<Sink>,
 	resubmission_queue: Queue,
 	stop_rx: Receiver<()>,
+	timeout: Option<Duration>,
 	event_counters: Arc<Counters>,
 	last_displayed: Option<Instant>,
 	log_file_name: Option<String>,
@@ -244,6 +245,7 @@ where
 		log_file_name: Option<String>,
 		base_dir_path: Option<String>,
 		executor_id: Option<String>,
+		timeout: Option<Duration>,
 	) -> (Sender<()>, Self) {
 		let event_counters = Arc::from(Counters::default());
 		let logs = transactions
@@ -273,6 +275,7 @@ where
 				log_file_name,
 				base_dir_path,
 				executor_id,
+				timeout,
 			},
 		)
 	}
@@ -388,6 +391,11 @@ where
 
 		loop {
 			select! {
+				_ = tokio::time::sleep(self.timeout.unwrap_or(Duration::from_secs(std::u64::MAX))) => {
+					self.resubmission_queue.forced_terminate();
+					info!("timeout reached");
+					break;
+				}
 				_ = tokio::time::sleep(Duration::from_millis(3000)) => {
 					self.consume_pending(&mut workers, false).await;
 				}
@@ -483,7 +491,7 @@ mod tests {
 			DefaultTxTask<FakeTransaction>,
 			FakeTransactionsSink,
 			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
-		>::new(5, rpc, transactions, queue, None, None, None);
+		>::new(5, rpc, transactions, queue, None, None, None, None);
 		join(queue_task, r.run()).await;
 	}
 
@@ -549,7 +557,7 @@ mod tests {
 			DefaultTxTask<EthTransaction>,
 			EthTransactionsSink,
 			DefaultResubmissionQueue<DefaultTxTask<EthTransaction>>,
-		>::new(10_000, rpc, transactions, queue, None, None, None);
+		>::new(10_000, rpc, transactions, queue, None, None, None, None);
 		join(queue_task, r.run()).await;
 	}
 
@@ -569,7 +577,7 @@ mod tests {
 			DefaultTxTask<FakeTransaction>,
 			FakeTransactionsSink,
 			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
-		>::new(100000, rpc, transactions, queue, None, None, None);
+		>::new(100000, rpc, transactions, queue, None, None, None, None);
 
 		join(queue_task, r.run()).await;
 	}
