@@ -104,7 +104,6 @@ pub type EthScenarioRunner = Runner<
 >;
 pub struct EthScenarioExecutor {
 	stop_sender: Sender<()>,
-	timeout: Option<Duration>,
 	runner: EthScenarioRunner,
 	resubmission_queue: ResubmissionQueueTask,
 }
@@ -116,7 +115,6 @@ pub type SubstrateScenarioRunner = Runner<
 >;
 pub struct SubstrateScenarioExecutor {
 	stop_sender: Sender<()>,
-	timeout: Option<Duration>,
 	runner: SubstrateScenarioRunner,
 	resubmission_queue: ResubmissionQueueTask,
 }
@@ -124,22 +122,20 @@ pub struct SubstrateScenarioExecutor {
 impl SubstrateScenarioExecutor {
 	pub(crate) fn new(
 		stop_sender: Sender<()>,
-		timeout: Option<Duration>,
 		runner: SubstrateScenarioRunner,
 		resubmission_queue: ResubmissionQueueTask,
 	) -> Self {
-		SubstrateScenarioExecutor { stop_sender, timeout, runner, resubmission_queue }
+		SubstrateScenarioExecutor { stop_sender, runner, resubmission_queue }
 	}
 }
 
 impl EthScenarioExecutor {
 	pub(crate) fn new(
 		stop_sender: Sender<()>,
-		timeout: Option<Duration>,
 		runner: EthScenarioRunner,
 		resubmission_queue: ResubmissionQueueTask,
 	) -> Self {
-		EthScenarioExecutor { stop_sender, timeout, runner, resubmission_queue }
+		EthScenarioExecutor { stop_sender, runner, resubmission_queue }
 	}
 }
 
@@ -161,28 +157,15 @@ impl ScenarioExecutor {
 	/// It is subject to the configured timeout, and if it will be reached, will return a subset of
 	/// the execution logs.
 	pub async fn execute(self) -> HashMap<H256, Arc<TransactionExecutionLog<H256>>> {
-		let stop_trigger = |timeout, stop_sender: Sender<()>| async move {
-			if let Some(duration) = timeout {
-				tokio::time::sleep(duration).await;
-				let _ = stop_sender.send(()).await;
-			}
-		};
-
 		match self {
 			ScenarioExecutor::Eth(mut inner) => {
-				let (_, _, logs) = tokio::join!(
-					stop_trigger(inner.timeout, inner.stop_sender),
-					inner.resubmission_queue,
-					inner.runner.run(),
-				);
+				let (_, logs) =
+					futures::future::join(inner.resubmission_queue, inner.runner.run()).await;
 				logs
 			},
 			ScenarioExecutor::Substrate(mut inner) => {
-				let (_, _, logs) = tokio::join!(
-					stop_trigger(inner.timeout, inner.stop_sender),
-					inner.resubmission_queue,
-					inner.runner.run(),
-				);
+				let (_, logs) =
+					futures::future::join(inner.resubmission_queue, inner.runner.run()).await;
 				logs
 			},
 		}
@@ -527,10 +510,10 @@ impl ScenarioBuilder {
 					self.log_file_name_prefix,
 					self.base_dir_path,
 					self.executor_id,
+					self.timeout,
 				);
 				let executor = ScenarioExecutor::Eth(EthScenarioExecutor::new(
 					stop_sender,
-					self.timeout,
 					runner,
 					queue_task,
 				));
@@ -564,11 +547,11 @@ impl ScenarioBuilder {
 					self.log_file_name_prefix,
 					self.base_dir_path,
 					self.executor_id,
+					self.timeout,
 				);
 
 				let executor = ScenarioExecutor::Substrate(SubstrateScenarioExecutor::new(
 					stop_sender,
-					self.timeout,
 					runner,
 					queue_task,
 				));
