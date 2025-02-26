@@ -391,7 +391,7 @@ where
 
 		loop {
 			select! {
-				_ = tokio::time::sleep(self.timeout.unwrap_or(Duration::from_secs(1500))) => {
+				_ = tokio::time::sleep(self.timeout.unwrap_or(Duration::from_secs(std::u64::MAX))) => {
 					self.resubmission_queue.forced_terminate();
 					info!("timeout reached");
 					break;
