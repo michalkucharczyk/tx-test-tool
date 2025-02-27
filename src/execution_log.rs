@@ -42,9 +42,6 @@ pub enum ExecutionEvent<H> {
 impl<H: BlockHash + DeserializeOwned + std::fmt::Debug> ExecutionEvent<H> {}
 
 impl<H: BlockHash> ExecutionEvent<H> {
-	pub fn resubmitted() -> Self {
-		Self::Resubmitted(SystemTime::now())
-	}
 	pub fn popped() -> Self {
 		Self::Popped(SystemTime::now())
 	}
@@ -72,7 +69,6 @@ impl<H: BlockHash> From<TransactionStatus<H>> for ExecutionEvent<H> {
 pub struct Counters {
 	popped: AtomicUsize,
 	sent: AtomicUsize,
-	resubmitted: AtomicUsize,
 	submit_success: AtomicUsize,
 	submit_error: AtomicUsize,
 	submit_and_watch_success: AtomicUsize,
@@ -81,6 +77,7 @@ pub struct Counters {
 
 	ts_validated: AtomicUsize,
 	ts_broadcasted: AtomicUsize,
+	ts_in_block: AtomicUsize,
 	ts_finalized: AtomicUsize,
 	ts_dropped: AtomicUsize,
 	ts_invalid: AtomicUsize,
@@ -92,13 +89,14 @@ impl Display for Counters {
 		// let buffered = self.buffered();
 		write!(
 			f,
-			"p {:7} s:{:7} {:7}/{:7} v:{:7} b{:7} f:{:7} d:{:7} i:{:7}",
+			"p {:7} s:{:7} {:7}/{:7} v:{:7} b{:7} B:{:7} f:{:7} d:{:7} i:{:7}",
 			self.popped.load(Ordering::Relaxed),
 			self.sent.load(Ordering::Relaxed),
 			self.submit_and_watch_success.load(Ordering::Relaxed),
 			self.submit_and_watch_error.load(Ordering::Relaxed),
 			self.ts_validated.load(Ordering::Relaxed),
 			self.ts_broadcasted.load(Ordering::Relaxed),
+			self.ts_in_block.load(Ordering::Relaxed),
 			self.ts_finalized.load(Ordering::Relaxed),
 			self.ts_dropped.load(Ordering::Relaxed),
 			self.ts_invalid.load(Ordering::Relaxed),
@@ -123,7 +121,6 @@ impl Counters {
 		match event {
 			ExecutionEvent::Popped(_) => Self::inc(&self.popped),
 			ExecutionEvent::Sent(_) => Self::inc(&self.sent),
-			ExecutionEvent::Resubmitted(_) => Self::inc(&self.resubmitted),
 			ExecutionEvent::SubmitResult(_, Ok(_)) => Self::inc(&self.submit_success),
 			ExecutionEvent::SubmitResult(_, Err(_)) => Self::inc(&self.submit_error),
 			ExecutionEvent::SubmitAndWatchResult(_, Ok(_)) =>
@@ -138,8 +135,10 @@ impl Counters {
 				TransactionStatus::Dropped(_) => Self::inc(&self.ts_dropped),
 				TransactionStatus::Invalid(_) => Self::inc(&self.ts_invalid),
 				TransactionStatus::Error(_) => Self::inc(&self.ts_error),
-				TransactionStatus::NoLongerInBestBlock | TransactionStatus::InBlock(_) => {},
+				TransactionStatus::InBlock(_) => Self::inc(&self.ts_in_block),
+				TransactionStatus::NoLongerInBestBlock => {},
 			},
+			ExecutionEvent::Resubmitted(_) => {},
 		}
 	}
 }
@@ -197,9 +196,6 @@ pub trait ExecutionLog: Sync + Send {
 
 	/// Returns the duration from submission to error occurrence.
 	fn time_to_error(&self) -> Option<Duration>;
-
-	/// Returns the duration from submission to resubmission.
-	fn time_to_resubmitted(&self) -> Option<Duration>;
 
 	/// Returns the duration to finalization as monitored by an external observer.
 	fn time_to_finalized_monitor(&self) -> Option<Duration>;
@@ -302,7 +298,15 @@ impl<H: BlockHash + 'static> ExecutionLog for TransactionExecutionLog<H> {
 
 	fn push_event(&self, event: ExecutionEvent<Self::HashType>) {
 		debug!(target:LOG_TARGET, ?event, "B push_event");
-		self.total_counters.count_event(&event);
+		if match event {
+			// note: dedup in block events - on the stats line we want to see transactions included,
+			// not events count
+			ExecutionEvent::TxPoolEvent(_, TransactionStatus::InBlock(_)) =>
+				self.in_blocks().is_empty(),
+			_ => true,
+		} {
+			self.total_counters.count_event(&event);
+		}
 		self.events.write().push(event);
 		trace!(target:LOG_TARGET, "A push_event");
 	}
@@ -389,14 +393,6 @@ impl<H: BlockHash + 'static> ExecutionLog for TransactionExecutionLog<H> {
 	fn time_to_dropped(&self) -> Option<Duration> {
 		let dts = self.events.read().iter().find_map(|e| match e {
 			ExecutionEvent::TxPoolEvent(i, TransactionStatus::Dropped(_)) => Some(*i),
-			_ => None,
-		});
-		Self::duration_since_timestamp(self.get_sent_time_stamp(), dts)
-	}
-
-	fn time_to_resubmitted(&self) -> Option<Duration> {
-		let dts = self.events.read().iter().find_map(|e| match e {
-			ExecutionEvent::Resubmitted(i) => Some(*i),
 			_ => None,
 		});
 		Self::duration_since_timestamp(self.get_sent_time_stamp(), dts)
@@ -582,7 +578,6 @@ pub fn make_stats<E: ExecutionLog>(logs: impl IntoIterator<Item = Arc<E>>, show_
 		E::time_to_finalized_monitor,
 		show_graphs,
 	);
-	single_stat("Time to resubmitted".into(), logs.iter(), E::time_to_resubmitted, show_graphs);
 
 	failure_reason_stats("Dropped".into(), logs.iter(), E::get_dropped_reason);
 	failure_reason_stats("Error".into(), logs.iter(), E::get_error_reason);

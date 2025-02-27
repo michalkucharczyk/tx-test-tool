@@ -249,11 +249,6 @@ pub trait Transaction: Send + Sync {
 	fn account_metadata(&self) -> AccountMetadata;
 }
 
-/// Interface for resubmission handling logic.
-pub trait ResubmitHandler: Sized {
-	fn handle_resubmit_request(self) -> Option<Self>;
-}
-
 /// Interface for monitoring transaction state.
 #[async_trait]
 pub trait TransactionMonitor<H: BlockHash> {

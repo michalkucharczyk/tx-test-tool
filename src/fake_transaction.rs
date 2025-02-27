@@ -5,7 +5,7 @@
 use crate::{
 	error::Error,
 	helpers::StreamOf,
-	transaction::{AccountMetadata, ResubmitHandler, Transaction, TransactionStatus},
+	transaction::{AccountMetadata, Transaction, TransactionStatus},
 };
 use futures::stream::{self};
 use futures_util::StreamExt;
@@ -139,17 +139,6 @@ impl Transaction for FakeTransaction {
 	}
 	fn account_metadata(&self) -> AccountMetadata {
 		self.account_metadata.clone()
-	}
-}
-
-impl ResubmitHandler for FakeTransaction {
-	fn handle_resubmit_request(self) -> Option<Self> {
-		self.current_stream_def.fetch_add(1, Ordering::Relaxed);
-		if self.current_stream_def.load(Ordering::Relaxed) < self.stream_def.len() {
-			Some(self)
-		} else {
-			None
-		}
 	}
 }
 

@@ -45,7 +45,6 @@ pub mod execution_log;
 pub mod fake_transaction;
 pub mod fake_transaction_sink;
 pub mod helpers;
-pub mod resubmission;
 pub mod runner;
 pub mod scenario;
 pub mod subxt_api_connector;
