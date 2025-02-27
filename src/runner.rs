@@ -191,6 +191,7 @@ pub struct Runner<T: TxTask, Sink: TransactionsSink<TxTaskHash<T>>> {
 	errors: Vec<TxTaskHash<T>>,
 	rpc: Arc<Sink>,
 	stop_rx: Receiver<()>,
+	timeout: Option<Duration>,
 	event_counters: Arc<Counters>,
 	last_displayed: Option<Instant>,
 	log_file_name: Option<String>,
@@ -211,6 +212,7 @@ where
 		log_file_name: Option<String>,
 		base_dir_path: Option<String>,
 		executor_id: Option<String>,
+		timeout: Option<Duration>,
 	) -> (Sender<()>, Self) {
 		let event_counters = Arc::from(Counters::default());
 		let logs = transactions
@@ -239,6 +241,7 @@ where
 				log_file_name,
 				base_dir_path,
 				executor_id,
+				timeout,
 			},
 		)
 	}
@@ -335,6 +338,10 @@ where
 
 		loop {
 			select! {
+				_ = tokio::time::sleep(self.timeout.unwrap_or(Duration::from_secs(std::u64::MAX))) => {
+					info!("timeout reached");
+					break;
+				}
 				_ = tokio::time::sleep(Duration::from_millis(3000)) => {
 					self.consume_pending(&mut workers).await;
 				}
@@ -418,6 +425,7 @@ mod tests {
 			None,
 			None,
 			None,
+			None,
 		);
 		r.run().await;
 	}
@@ -485,6 +493,7 @@ mod tests {
 			None,
 			None,
 			None,
+			None,
 		);
 		r.run().await;
 	}
@@ -503,6 +512,7 @@ mod tests {
 			100000,
 			rpc,
 			transactions,
+			None,
 			None,
 			None,
 			None,

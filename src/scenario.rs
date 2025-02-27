@@ -4,7 +4,7 @@
 
 //! Provides transactions sending scenarios together with associated builders and executors.
 
-use std::{collections::HashMap, ops::Range, sync::Arc};
+use std::{collections::HashMap, ops::Range, sync::Arc, time::Duration};
 
 use clap::{Subcommand, ValueEnum};
 use futures::executor::block_on;
@@ -135,6 +135,9 @@ impl ScenarioExecutor {
 	///
 	/// It returns a mapping of transaction hashes to their respective execution log entries,
 	/// providing a detailed view of the transaction's execution process.
+	///
+	/// It is subject to the configured timeout, and if it will be reached, will return a subset of
+	/// the execution logs.
 	pub async fn execute(self) -> HashMap<H256, Arc<TransactionExecutionLog<H256>>> {
 		match self {
 			ScenarioExecutor::Eth(mut inner) => inner.runner.run().await,
@@ -176,6 +179,7 @@ pub struct ScenarioBuilder {
 	tip: u128,
 	log_file_name_prefix: Option<String>,
 	base_dir_path: Option<String>,
+	timeout: Option<Duration>,
 }
 
 impl Default for ScenarioBuilder {
@@ -208,6 +212,7 @@ impl ScenarioBuilder {
 			tip: 0,
 			log_file_name_prefix: None,
 			base_dir_path: None,
+			timeout: None,
 		}
 	}
 
@@ -315,6 +320,16 @@ impl ScenarioBuilder {
 	/// If specified, the stats will be printed when `stop` signal is sent to process.
 	pub fn with_installed_ctrlc_stop_hook(mut self, installs_ctrl_c_stop_hook: bool) -> Self {
 		self.installs_ctrl_c_stop_hook = installs_ctrl_c_stop_hook;
+		self
+	}
+
+	/// Sets a maximum duration for the scenario execution.  
+	///
+	/// If specified, execution will be limited to the given timeout, ensuring  the executor returns
+	/// with logs if the duration is reached.  Typically, the scenario will complete earlier, but
+	/// the timeout acts  as a safeguard to prevent indefinite execution.
+	pub fn with_timeout_in_secs(mut self, secs: u64) -> Self {
+		self.timeout = Some(Duration::from_secs(secs));
 		self
 	}
 
@@ -467,6 +482,7 @@ impl ScenarioBuilder {
 						self.log_file_name_prefix,
 						self.base_dir_path,
 						self.executor_id,
+						self.timeout,
 					);
 				let executor = ScenarioExecutor::Eth(EthScenarioExecutor::new(stop_sender, runner));
 				installs_ctrlc_stop_hook.then(|| executor.install_ctrlc_stop_hook());
@@ -494,6 +510,7 @@ impl ScenarioBuilder {
 						self.log_file_name_prefix,
 						self.base_dir_path,
 						self.executor_id,
+						self.timeout,
 					);
 
 				let executor = ScenarioExecutor::Substrate(SubstrateScenarioExecutor::new(
