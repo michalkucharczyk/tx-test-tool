@@ -4,8 +4,8 @@ use crate::{
 	helpers::StreamOf,
 	scenario::AccountsDescription,
 	transaction::{
-		AccountMetadata, ResubmitHandler, Transaction, TransactionCall, TransactionMonitor,
-		TransactionRecipe, TransactionStatus, TransactionsSink,
+		AccountMetadata, Transaction, TransactionCall, TransactionMonitor, TransactionRecipe,
+		TransactionStatus, TransactionsSink,
 	},
 };
 use async_trait::async_trait;
@@ -100,13 +100,6 @@ impl<C: subxt::Config> Transaction for SubxtTransaction<C> {
 	}
 	fn account_metadata(&self) -> AccountMetadata {
 		self.account_metadata.clone()
-	}
-}
-
-impl<C: subxt::Config> ResubmitHandler for SubxtTransaction<C> {
-	fn handle_resubmit_request(self) -> Option<Self> {
-		//mortality check and re-signing
-		Some(self)
 	}
 }
 

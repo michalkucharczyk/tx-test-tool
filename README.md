@@ -10,7 +10,7 @@
 - block monitoring: monitor blocks for transaction finalization,
 - per transaction execution log: all transaction events are stored in journal file for latter inspection, allowing also to track duration between execution events,
 - test execution abstracted from the chain type, theoretically allowing to re-use execution scenarios across multiple chains,
-- tracking *dropped* or *invalid* transactions, and resubmitting them when appropriate,
+- tracking *dropped* or *invalid* transactions,
 
 ### Installation:
 

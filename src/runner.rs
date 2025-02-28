@@ -7,13 +7,11 @@ use crate::{
 		journal::Journal, make_stats, Counters, ExecutionEvent, ExecutionLog, Logs,
 		TransactionExecutionLog, STAT_TARGET,
 	},
-	resubmission::{NeedsResubmit, ResubmissionQueue, ResubmitReason},
-	transaction::{ResubmitHandler, Transaction, TransactionStatusIsDone, TransactionsSink},
+	transaction::{Transaction, TransactionStatusIsDone, TransactionsSink},
 };
 use async_trait::async_trait;
 use futures::{stream::FuturesUnordered, Future, StreamExt};
 use std::{
-	cmp::min,
 	path::Path,
 	pin::Pin,
 	sync::Arc,
@@ -33,7 +31,6 @@ pub type TxTaskHash<T> = <<T as TxTask>::Transaction as Transaction>::HashType;
 
 /// Provides a transaction execution result.
 pub enum ExecutionResult<T: TxTask> {
-	NeedsResubmit(ResubmitReason, T),
 	Error(TxTaskHash<T>),
 	Done(TxTaskHash<T>),
 }
@@ -41,7 +38,6 @@ pub enum ExecutionResult<T: TxTask> {
 impl<T: TxTask> std::fmt::Debug for ExecutionResult<T> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
-			Self::NeedsResubmit(r, t) => write!(f, "NeedsResubmit {r:?} {:?}", t.tx().hash()),
 			Self::Error(h) => write!(f, "Error {h:?}"),
 			Self::Done(h) => write!(f, "Done {h:?}"),
 		}
@@ -51,7 +47,7 @@ impl<T: TxTask> std::fmt::Debug for ExecutionResult<T> {
 /// Interface for tasks that monitor transaction execution.
 #[async_trait]
 pub trait TxTask: Send + Sync + Sized + std::fmt::Debug {
-	type Transaction: Transaction + ResubmitHandler;
+	type Transaction: Transaction;
 
 	fn tx(&self) -> &Self::Transaction;
 	fn is_watched(&self) -> bool;
@@ -73,8 +69,6 @@ pub trait TxTask: Send + Sync + Sized + std::fmt::Debug {
 		log: Arc<dyn ExecutionLog<HashType = TxTaskHash<Self>>>,
 		rpc: Arc<dyn TransactionsSink<TxTaskHash<Self>>>,
 	) -> ExecutionResult<Self>;
-
-	fn handle_resubmit_request(self) -> Option<Self>;
 }
 
 /// Holds the logic for a transaction submission.
@@ -97,9 +91,7 @@ where
 }
 
 #[async_trait]
-impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
-	for DefaultTxTask<T>
-{
+impl<H: BlockHash, T: Transaction<HashType = H> + Send> TxTask for DefaultTxTask<T> {
 	type Transaction = T;
 
 	fn tx(&self) -> &T {
@@ -108,15 +100,6 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 
 	fn is_watched(&self) -> bool {
 		self.watched
-	}
-
-	fn handle_resubmit_request(mut self) -> Option<Self> {
-		if let Some(new_tx) = self.tx.handle_resubmit_request() {
-			self.tx = new_tx;
-			Some(self)
-		} else {
-			None
-		}
 	}
 
 	async fn send_watched_tx(
@@ -133,8 +116,6 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 					log.push_event(status.clone().into());
 					if status.is_finalized() {
 						return ExecutionResult::Done(self.tx().hash());
-					} else if let Some(reason) = status.needs_resubmission() {
-						return ExecutionResult::NeedsResubmit(reason, self);
 					} else if status.is_error() {
 						return ExecutionResult::Error(self.tx().hash());
 					} else {
@@ -146,17 +127,9 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 				// ExecutionResult::Error(self.tx().hash())
 			},
 			Err(e) => {
-				let (hash, nonce) = (self.tx().hash(), self.tx().nonce());
-				let result = if let Some(reason) = e.needs_resubmission() {
-					ExecutionResult::NeedsResubmit(reason, self)
-				} else {
-					info!(nonce=?self.tx().nonce(),"submit_and_watch: error: {e:?}");
-					ExecutionResult::Error(self.tx().hash())
-				};
+				info!(nonce=?self.tx().nonce(),"submit_and_watch: error: {e:?}");
+				let result = ExecutionResult::Error(self.tx().hash());
 				// debug!(?hash, nonce, "error: {e:?} {result:?}");
-				if !matches!(result, ExecutionResult::NeedsResubmit(ResubmitReason::Dropped, _)) {
-					info!(?hash, nonce, "error: {e:?} {result:?}");
-				}
 				log.push_event(ExecutionEvent::submit_and_watch_result(Err(e)));
 				result
 			},
@@ -180,11 +153,7 @@ impl<H: BlockHash, T: Transaction<HashType = H> + ResubmitHandler + Send> TxTask
 				ExecutionResult::Done(self.tx().hash())
 			},
 			Err(e) => {
-				let result = if let Some(reason) = e.needs_resubmission() {
-					ExecutionResult::NeedsResubmit(reason, self)
-				} else {
-					ExecutionResult::Error(self.tx().hash())
-				};
+				let result = ExecutionResult::Error(self.tx().hash());
 				log.push_event(ExecutionEvent::submit_result(Err(e)));
 				result
 			},
@@ -214,14 +183,13 @@ impl<T: Transaction> DefaultTxTask<T> {
 }
 
 /// Holds the logic that handles multiple transactions execution on a specific chain.
-pub struct Runner<T: TxTask, Sink: TransactionsSink<TxTaskHash<T>>, Queue: ResubmissionQueue<T>> {
+pub struct Runner<T: TxTask, Sink: TransactionsSink<TxTaskHash<T>>> {
 	initial_tasks: usize,
 	logs: Logs<T>,
 	transactions: Vec<T>,
 	done: Vec<TxTaskHash<T>>,
 	errors: Vec<TxTaskHash<T>>,
 	rpc: Arc<Sink>,
-	resubmission_queue: Queue,
 	stop_rx: Receiver<()>,
 	timeout: Option<Duration>,
 	event_counters: Arc<Counters>,
@@ -231,7 +199,7 @@ pub struct Runner<T: TxTask, Sink: TransactionsSink<TxTaskHash<T>>, Queue: Resub
 	executor_id: Option<String>,
 }
 
-impl<T: TxTask + 'static, Sink, Queue: ResubmissionQueue<T>> Runner<T, Sink, Queue>
+impl<T: TxTask + 'static, Sink> Runner<T, Sink>
 where
 	Sink: TransactionsSink<TxTaskHash<T>> + 'static,
 	TxTaskHash<T>: 'static,
@@ -241,7 +209,6 @@ where
 		initial_tasks: usize,
 		rpc: Sink,
 		transactions: Vec<T>,
-		queue: Queue,
 		log_file_name: Option<String>,
 		base_dir_path: Option<String>,
 		executor_id: Option<String>,
@@ -266,7 +233,6 @@ where
 				logs,
 				transactions,
 				rpc: rpc.into(),
-				resubmission_queue: queue,
 				done: Default::default(),
 				errors: Default::default(),
 				stop_rx: rx,
@@ -282,13 +248,7 @@ where
 
 	fn pop(&mut self) -> Option<T> {
 		trace!(target:LOG_TARGET, "before pop");
-		let r = self.resubmission_queue.pop().or_else(|| {
-			if self.resubmission_queue.is_empty() {
-				self.transactions.pop()
-			} else {
-				None
-			}
-		});
+		let r = self.transactions.pop();
 		trace!(target:LOG_TARGET, "after pop {}", r.is_some());
 		r
 	}
@@ -296,16 +256,13 @@ where
 	async fn consume_pending(
 		&mut self,
 		workers: &mut FuturesUnordered<Pin<Box<dyn Future<Output = ExecutionResult<T>> + Send>>>,
-		single: bool,
 	) {
 		let current_count = self.rpc.count().await;
-		let gap = self
+		let to_consume = self
 			.initial_tasks
 			.saturating_sub(current_count)
 			.saturating_sub(self.event_counters.buffered());
-		let workers_len = workers.len();
 		let mut pushed = 0;
-		let to_consume = if single { min(1, gap) } else { gap };
 		let counters_displayed = format!("{}", self.event_counters);
 		let mut nonces = vec![];
 		for _ in 0..to_consume {
@@ -331,17 +288,7 @@ where
 		};
 		if display {
 			self.last_displayed = Some(Instant::now());
-
-			info!(
-				workers_len,
-				gap,
-				current_count,
-				initial_task = self.initial_tasks,
-				pushed,
-				min_nonce_sent,
-				"consume pending {}",
-				counters_displayed,
-			);
+			info!(current_count, pushed, min_nonce_sent, "consume pending {}", counters_displayed,);
 		};
 	}
 
@@ -392,15 +339,13 @@ where
 		loop {
 			select! {
 				_ = tokio::time::sleep(self.timeout.unwrap_or(Duration::from_secs(std::u64::MAX))) => {
-					self.resubmission_queue.forced_terminate();
 					info!("timeout reached");
 					break;
 				}
 				_ = tokio::time::sleep(Duration::from_millis(3000)) => {
-					self.consume_pending(&mut workers, false).await;
+					self.consume_pending(&mut workers).await;
 				}
 				_ = self.stop_rx.recv() => {
-					self.resubmission_queue.forced_terminate();
 					info!("received termination request");
 					break;
 				}
@@ -408,14 +353,9 @@ where
 					match done {
 						Some(result) => {
 							debug!(target:LOG_TARGET,?result, workers_len=workers.len(), "FINISHED");
-							self.consume_pending(&mut workers, false).await;
+							self.consume_pending(&mut workers).await;
 
 							match result {
-								ExecutionResult::NeedsResubmit(reason, t) => {
-								let log = self.logs[&t.tx().hash()].clone();
-									log.push_event(ExecutionEvent::resubmitted());
-									self.resubmission_queue.resubmit(t, reason).await;
-								},
 								ExecutionResult::Done(hash) => {
 									self.done.push(hash)
 								},
@@ -428,14 +368,10 @@ where
 							trace!(target:LOG_TARGET, "after match");
 						}
 						None => {
-							debug!(target:LOG_TARGET,"all futures done");
-							tokio::time::sleep(Duration::from_millis(100)).await;
-							if self.resubmission_queue.is_empty() {
-								self.resubmission_queue.terminate();
-								debug!(target:LOG_TARGET,"done");
-								break;
-							}
-							self.consume_pending(&mut workers, false).await;
+							info!(target:LOG_TARGET, transactions_len = self.transactions.len(), "all futures done ");
+							// tokio::time::sleep(Duration::from_millis(100)).await;
+							// self.consume_pending(&mut workers).await;
+							break;
 						}
 					}
 				}
@@ -455,13 +391,10 @@ mod tests {
 	use crate::{
 		fake_transaction::FakeTransaction,
 		fake_transaction_sink::FakeTransactionsSink,
-		init_logger,
-		resubmission::DefaultResubmissionQueue,
-		subxt_api_connector,
+		init_logger, subxt_api_connector,
 		subxt_transaction::{EthRuntimeConfig, EthTransaction, EthTransactionsSink},
 		transaction::AccountMetadata,
 	};
-	use futures::future::join;
 	use subxt::{
 		config::substrate::SubstrateExtrinsicParamsBuilder as Params, dynamic::Value, OnlineClient,
 	};
@@ -485,14 +418,16 @@ mod tests {
 		transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_invalid(11u32, 0, 300)));
 		transactions.push(FakeTxTask::new_unwatched(FakeTransaction::new_error(12u32, 0, 300)));
 
-		let (queue, queue_task) = DefaultResubmissionQueue::new();
-
-		let (_c, mut r) = Runner::<
-			DefaultTxTask<FakeTransaction>,
-			FakeTransactionsSink,
-			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
-		>::new(5, rpc, transactions, queue, None, None, None, None);
-		join(queue_task, r.run()).await;
+		let (_c, mut r) = Runner::<DefaultTxTask<FakeTransaction>, FakeTransactionsSink>::new(
+			5,
+			rpc,
+			transactions,
+			None,
+			None,
+			None,
+			None,
+		);
+		r.run().await;
 	}
 
 	type EthTestTxTask = DefaultTxTask<EthTransaction>;
@@ -551,14 +486,16 @@ mod tests {
 			// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
 			.collect::<Vec<_>>();
 
-		let (queue, queue_task) = DefaultResubmissionQueue::new();
-
-		let (_c, mut r) = Runner::<
-			DefaultTxTask<EthTransaction>,
-			EthTransactionsSink,
-			DefaultResubmissionQueue<DefaultTxTask<EthTransaction>>,
-		>::new(10_000, rpc, transactions, queue, None, None, None, None);
-		join(queue_task, r.run()).await;
+		let (_c, mut r) = Runner::<DefaultTxTask<EthTransaction>, EthTransactionsSink>::new(
+			10_000,
+			rpc,
+			transactions,
+			None,
+			None,
+			None,
+			None,
+		);
+		r.run().await;
 	}
 
 	#[tokio::test]
@@ -571,15 +508,17 @@ mod tests {
 			// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
 			.collect::<Vec<_>>();
 
-		let (queue, queue_task) = DefaultResubmissionQueue::new();
+		let (_, mut r) = Runner::<DefaultTxTask<FakeTransaction>, FakeTransactionsSink>::new(
+			100000,
+			rpc,
+			transactions,
+			None,
+			None,
+			None,
+			None,
+		);
 
-		let (_, mut r) = Runner::<
-			DefaultTxTask<FakeTransaction>,
-			FakeTransactionsSink,
-			DefaultResubmissionQueue<DefaultTxTask<FakeTransaction>>,
-		>::new(100000, rpc, transactions, queue, None, None, None, None);
-
-		join(queue_task, r.run()).await;
+		r.run().await;
 	}
 
 	#[tokio::test]
