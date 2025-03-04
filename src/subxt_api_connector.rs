@@ -3,7 +3,7 @@
 // see LICENSE for license details.
 
 use std::{error::Error, sync::Arc, time::Duration};
-use subxt::{backend::legacy::LegacyBackend, OnlineClient};
+use subxt::OnlineClient;
 use tracing::info;
 
 use crate::helpers;
@@ -18,9 +18,10 @@ pub(crate) async fn connect<C: subxt::Config>(
 ) -> Result<OnlineClient<C>, Box<dyn Error>> {
 	for i in 0..MAX_ATTEMPTS {
 		info!("Attempt #{}: Connecting to {}", i, url);
-		// let maybe_client = OnlineClient::<EthRuntimeConfig>::from_url(url).await;
-		let backend = LegacyBackend::builder()
-			.build(subxt::backend::rpc::RpcClient::new(helpers::client(url).await?));
+		let backend = subxt::backend::chain_head::ChainHeadBackend::builder()
+			.build_with_background_driver(subxt::backend::rpc::RpcClient::new(
+				helpers::client(url).await?,
+			));
 		let maybe_client = OnlineClient::from_backend(Arc::new(backend)).await;
 
 		// let maybe_client = OnlineClient::<EthRuntimeConfig>::from_rpc_client(client);
