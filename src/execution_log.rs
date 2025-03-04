@@ -660,19 +660,102 @@ pub mod journal {
 			file.write_all(json.as_bytes()).unwrap();
 		}
 
-		pub fn load_logs(name: &str) -> Logs<T> {
-			// Open the file and read its contents
+		pub fn load_logs(name: &str, csv_filename: &Option<String>) -> Logs<T> {
 			let mut file = File::open(name).expect("Unable to open file");
 			let mut json = String::new();
 			file.read_to_string(&mut json).expect("Unable to read file");
 
-			// Deserialize the JSON data into the desired type
 			let data: HashMap<TxTaskHash<T>, DefaultExecutionLogSerdeHelper<TxTaskHash<T>>> =
 				serde_json::from_str(&json).expect("Unable to deserialize JSON");
 
-			data.into_iter()
+			let data: Logs<T> = data
+				.into_iter()
 				.map(|l| (l.0, Arc::new(TransactionExecutionLog::from(l.1))))
-				.collect()
+				.collect();
+
+			if let Some(csv_filename) = csv_filename {
+				Self::save_csv(data.clone(), &Path::new(csv_filename));
+			}
+			data
+		}
+
+		pub fn save_csv(logs: Logs<T>, filename: &Path) {
+			let mut raw_data = HashMap::<TxTaskHash<T>, CsvEntry<T>>::default();
+
+			for (h, v) in logs {
+				raw_data.insert(h, v.into());
+			}
+
+			let mut file = File::create(filename).unwrap();
+
+			writeln!(file, "hash,{}", CsvEntry::<T>::header_line()).unwrap();
+			for (h, v) in raw_data {
+				writeln!(file, "{:?},{}", h, v).unwrap();
+			}
+		}
+	}
+
+	struct CsvEntry<T: TxTask> {
+		finalized: bool,
+		in_block: bool,
+		time_to_finalized: Option<Duration>,
+		time_to_result: Option<Duration>,
+		time_to_validated: Option<Duration>,
+		time_to_broadcasted: Option<Duration>,
+		time_to_in_block: Option<Duration>,
+		time_to_finalized_monitor: Option<Duration>,
+		_p: PhantomData<T>,
+	}
+
+	impl<T: TxTask> CsvEntry<T> {
+		fn header_line() -> String {
+			format!(
+				"{},{},{},{},{},{},{},{}",
+				"finalized",
+				"in_block",
+				"time_to_finalized",
+				"time_to_result",
+				"time_to_validated",
+				"time_to_broadcasted",
+				"time_to_in_block",
+				"time_to_finalized_monitor"
+			)
+			.to_string()
+		}
+	}
+
+	use std::fmt::{self, Formatter, Result};
+
+	impl<T: TxTask> fmt::Display for CsvEntry<T> {
+		fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+			write!(
+				f,
+				"{},{},{},{},{},{},{},{}",
+				self.finalized as u8,
+				self.in_block as u8,
+				self.time_to_finalized.unwrap_or_default().as_millis(),
+				self.time_to_result.unwrap_or_default().as_millis(),
+				self.time_to_validated.unwrap_or_default().as_millis(),
+				self.time_to_broadcasted.unwrap_or_default().as_millis(),
+				self.time_to_in_block.unwrap_or_default().as_millis(),
+				self.time_to_finalized_monitor.unwrap_or_default().as_millis()
+			)
+		}
+	}
+
+	impl<T: TxTask> From<Arc<TransactionExecutionLog<TxTaskHash<T>>>> for CsvEntry<T> {
+		fn from(l: Arc<TransactionExecutionLog<TxTaskHash<T>>>) -> Self {
+			Self {
+				finalized: l.time_to_finalized().is_some(),
+				in_block: l.time_to_inblock().is_some(),
+				time_to_finalized: l.time_to_finalized(),
+				time_to_result: l.time_to_result(),
+				time_to_validated: l.time_to_validated(),
+				time_to_broadcasted: l.time_to_broadcasted(),
+				time_to_in_block: l.time_to_inblock(),
+				time_to_finalized_monitor: l.time_to_finalized_monitor(),
+				_p: Default::default(),
+			}
 		}
 	}
 }

@@ -90,6 +90,10 @@ pub enum CliCommand {
 		/// Display errors.
 		#[clap(long)]
 		show_errors: bool,
+		/// Convert loaded log file into CSV file. If specified, CSV file will be written into
+		/// given location.
+		#[clap(long)]
+		out_csv_filename: Option<String>,
 	},
 	/// Generate a list of endowed accounts.
 	GenerateEndowedAccounts {
