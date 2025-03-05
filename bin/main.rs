@@ -178,13 +178,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				},
 			};
 		},
-		CliCommand::LoadLog { chain, log_file, show_graphs, .. } => match chain {
+		CliCommand::LoadLog { chain, log_file, show_graphs, out_csv_filename, .. } => match chain {
 			ChainType::Sub => {
-				let logs = Journal::<DefaultTxTask<SubstrateTransaction>>::load_logs(log_file);
+				let logs = Journal::<DefaultTxTask<SubstrateTransaction>>::load_logs(
+					log_file,
+					out_csv_filename,
+				);
 				make_stats(logs.values().cloned(), *show_graphs);
 			},
 			ChainType::Eth => {
-				let logs = Journal::<DefaultTxTask<EthTransaction>>::load_logs(log_file);
+				let logs =
+					Journal::<DefaultTxTask<EthTransaction>>::load_logs(log_file, out_csv_filename);
 				make_stats(logs.values().cloned(), *show_graphs);
 			},
 			ChainType::Fake => {
