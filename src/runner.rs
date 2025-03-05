@@ -337,11 +337,12 @@ where
 		}
 
 		let mut timeout = self.timeout.unwrap_or(Duration::from_secs(std::u64::MAX));
+		let mut timeout_reached = false;
 		loop {
 			let iteration_start = Instant::now();
 			select! {
 				_ = tokio::time::sleep(timeout) => {
-					info!("timeout reached");
+					timeout_reached = true;
 					break;
 				}
 				_ = tokio::time::sleep(Duration::from_millis(3000)) => {
@@ -380,12 +381,11 @@ where
 			}
 
 			// Adjust timeout based on how long the iteration took.
-			let iteration_duration = Instant::now().saturating_duration_since(iteration_start);
-			timeout = timeout.saturating_sub(iteration_duration);
+			timeout = timeout.saturating_sub(iteration_start.elapsed());
 		}
 
 		Journal::<T>::save_logs(self.logs.clone(), Path::new(self.log_file_path().as_str()));
-		info!(target: STAT_TARGET, total_duration = ?start.elapsed(), ?original_transactions_count);
+		info!(target: STAT_TARGET, total_duration = ?start.elapsed(), ?original_transactions_count, ?timeout_reached);
 		make_stats(self.logs.values().cloned(), false);
 		self.logs.clone()
 	}
