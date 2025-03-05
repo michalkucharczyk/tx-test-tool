@@ -530,8 +530,10 @@ mod tests {
 	#[tokio::test]
 	async fn read_json() {
 		init_logger();
-		let logs =
-			Journal::<DefaultTxTask<FakeTransaction>>::load_logs("tests/out_20250206_151339.json");
+		let logs = Journal::<DefaultTxTask<FakeTransaction>>::load_logs(
+			"tests/out_20250206_151339.json",
+			&None,
+		);
 		make_stats(logs.values().cloned(), true);
 	}
 }
