@@ -15,9 +15,9 @@ async-trait = "0.1.81"
 futures = "0.3.30"
 futures-util = "0.3.30"
 jsonrpsee = { version = "0.24.8", features = [
-	"async-client",
-	"client-web-transport",
-	"jsonrpsee-types",
+    "async-client",
+    "client-web-transport",
+    "jsonrpsee-types",
 ] }
 average = "0.15.1"
 chrono = "0.4.38"
@@ -30,26 +30,26 @@ parking_lot = "0.12.3"
 rand = "0.9.0"
 serde = "1.0.204"
 serde_json = { version = "1.0.121", features = ["arbitrary_precision"] }
-subxt = { version = "0.39.0" }
-subxt-core = "0.39.0"
-subxt-signer = { version = "0.39.0", features = ["unstable-eth"] }
+subxt = { version = "0.40.0" }
+subxt-core = "0.40.0"
+subxt-signer = { version = "0.40.0", features = ["unstable-eth"] }
 termplot = "0.1.1"
 thiserror = "2.0.11"
 time = { version = "0.3.36", features = [
-	"formatting",
-	"local-offset",
-	"macros",
+    "formatting",
+    "local-offset",
+    "macros",
 ] }
 tokio = { version = "1.39.1", features = [
-	"macros",
-	"rt-multi-thread",
-	"sync",
-	"time",
+    "macros",
+    "rt-multi-thread",
+    "sync",
+    "time",
 ] }
 tokio-util = { version = "0.7.11", features = ["compat"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = [
-	"env-filter",
-	"fmt",
-	"time",
+    "env-filter",
+    "fmt",
+    "time",
 ] }
