@@ -463,7 +463,7 @@ mod tests {
 		);
 
 		let tx = EthTransaction::new(
-			api.tx().create_signed_offline(&tx_call, &baltathar, tx_params).unwrap(),
+			api.tx().create_partial_offline(&tx_call, tx_params).unwrap().sign(&baltathar),
 			nonce as u128,
 			AccountMetadata::KeyRing("baltathar".to_string()),
 		);
