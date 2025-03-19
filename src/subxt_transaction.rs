@@ -19,14 +19,13 @@ use std::{
 };
 use subxt::{
 	backend::rpc::RpcClient,
-	config::signed_extensions::{
+	config::transaction_extensions::{
 		ChargeAssetTxPaymentParams, ChargeTransactionPaymentParams, CheckMortalityParams,
 		CheckNonceParams,
 	},
 	dynamic::{At, Value},
 	ext::scale_value::value,
-	rpc_params,
-	tx::{DynamicPayload, Signer, SubmittableExtrinsic},
+	tx::{DynamicPayload, Signer, SubmittableTransaction},
 	OnlineClient, PolkadotConfig,
 };
 use subxt_core::{config::SubstrateExtrinsicParamsBuilder, utils::AccountId20};
@@ -60,7 +59,7 @@ pub(crate) type AccountIdOf<C> = <C as subxt::Config>::AccountId;
 
 /// A subxt transaction abstraction.
 pub struct SubxtTransaction<C: subxt::Config> {
-	extrinsic: SubmittableExtrinsic<C, OnlineClient<C>>,
+	transaction: SubmittableTransaction<C, OnlineClient<C>>,
 	nonce: u128,
 	account_metadata: AccountMetadata,
 }
@@ -76,11 +75,11 @@ pub type SubstrateTransactionsSink = SubxtTransactionsSink<PolkadotConfig, SrPai
 
 impl<C: subxt::Config> SubxtTransaction<C> {
 	pub fn new(
-		extrinsic: SubmittableExtrinsic<C, OnlineClient<C>>,
+		transaction: SubmittableTransaction<C, OnlineClient<C>>,
 		nonce: u128,
 		account_metadata: AccountMetadata,
 	) -> Self {
-		Self { extrinsic, nonce, account_metadata }
+		Self { transaction, nonce, account_metadata }
 	}
 }
 
@@ -90,7 +89,7 @@ impl<C: subxt::Config> SubxtTransaction<C> {
 impl<C: subxt::Config> Transaction for SubxtTransaction<C> {
 	type HashType = <C as subxt::Config>::Hash;
 	fn hash(&self) -> Self::HashType {
-		self.extrinsic.hash()
+		self.transaction.hash()
 	}
 	fn as_any(&self) -> &dyn Any {
 		self
@@ -220,7 +219,10 @@ where
 		let i = Instant::now();
 		let xts = self
 			.rpc_client
-			.request::<Vec<serde_json::Value>>("author_pendingExtrinsics", rpc_params![])
+			.request::<Vec<serde_json::Value>>(
+				"author_pendingExtrinsics",
+				subxt_rpcs::rpc_params!(),
+			)
 			.await
 			.expect("author_pendingExtrinsics should not fail");
 		*self.current_pending_extrinsics.write() = Some((i, xts.len()));
@@ -266,7 +268,7 @@ where
 		tx: &dyn Transaction<HashType = <C as subxt::Config>::Hash>,
 	) -> Result<StreamOf<TransactionStatus<<C as subxt::Config>::Hash>>, Error> {
 		let tx = tx.as_any().downcast_ref::<SubxtTransaction<C>>().unwrap();
-		let result = tx.extrinsic.submit_and_watch().await;
+		let result = tx.transaction.submit_and_watch().await;
 
 		match result {
 			Ok(stream) => Ok(stream.map(|e| e.unwrap().into()).boxed()),
@@ -279,7 +281,7 @@ where
 		tx: &dyn Transaction<HashType = <C as subxt::Config>::Hash>,
 	) -> Result<<C as subxt::Config>::Hash, Error> {
 		let tx = tx.as_any().downcast_ref::<SubxtTransaction<C>>().unwrap();
-		tx.extrinsic.submit().await.map_err(|e| e.into())
+		tx.transaction.submit().await.map_err(|e| e.into())
 	}
 
 	/// Current count of transactions being processed by sink.
@@ -505,6 +507,7 @@ where
 	<<C as subxt::Config>::ExtrinsicParams as subxt::config::ExtrinsicParams<C>>::Params: From<(
 		(),
 		(),
+		(),
 		CheckNonceParams,
 		(),
 		CheckMortalityParams<C>,
@@ -547,8 +550,9 @@ where
 	let tx = SubxtTransaction::<C>::new(
 		sink.api()
 			.tx()
-			.create_signed_offline(&tx_call, &from_keypair, tx_params)
-			.unwrap(),
+			.create_partial_offline(&tx_call, tx_params)
+			.unwrap()
+			.sign(&from_keypair),
 		nonce as u128,
 		sink.get_to_account_metadata(account).expect("account metadata exists"),
 	);

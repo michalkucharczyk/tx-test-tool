@@ -1,6 +1,6 @@
 [package]
 name = "substrate-txtesttool"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "A library and CLI tool for sending transactions to substrate-based chains, enabling developers to test and monitor transaction scenarios."
 license = "Apache-2.0 OR GPL-3.0"
@@ -30,9 +30,10 @@ parking_lot = "0.12.3"
 rand = "0.9.0"
 serde = "1.0.204"
 serde_json = { version = "1.0.121", features = ["arbitrary_precision"] }
-subxt = { version = "0.40.0" }
-subxt-core = "0.40.0"
-subxt-signer = { version = "0.40.0", features = ["unstable-eth"] }
+subxt = { version = "0.41.0" }
+subxt-core = "0.41.0"
+subxt-rpcs = "0.41.0"
+subxt-signer = { version = "0.41.0", features = ["unstable-eth"] }
 termplot = "0.1.1"
 thiserror = "2.0.11"
 time = { version = "0.3.36", features = [
