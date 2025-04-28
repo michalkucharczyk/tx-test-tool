@@ -20,7 +20,8 @@ pub(crate) async fn connect<C: subxt::Config>(
 		info!("Attempt #{}: Connecting to {}", i, url);
 		let backend = subxt::backend::chain_head::ChainHeadBackend::builder()
 			.transaction_timeout(6 * 3600)
-			.submit_transactions_ignoring_follow_events()
+			//note: This required new subxt release
+			//.submit_transactions_ignoring_follow_events()
 			.build_with_background_driver(subxt::backend::rpc::RpcClient::new(
 				helpers::client(url).await?,
 			));
