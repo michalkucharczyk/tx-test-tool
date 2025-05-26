@@ -180,6 +180,7 @@ pub struct ScenarioBuilder {
 	log_file_name_prefix: Option<String>,
 	base_dir_path: Option<String>,
 	timeout: Option<Duration>,
+	use_legacy_backend: bool,
 }
 
 impl Default for ScenarioBuilder {
@@ -213,6 +214,7 @@ impl ScenarioBuilder {
 			log_file_name_prefix: None,
 			base_dir_path: None,
 			timeout: None,
+			use_legacy_backend: false,
 		}
 	}
 
@@ -312,6 +314,9 @@ impl ScenarioBuilder {
 
 	/// Specifies how many transactions in transaction pool on the node side will be maintained at
 	/// the fork of the best chain.
+	///
+	/// `usize::MAX` means that the count of `pending_extrinsics` on node side is not called, and an
+	/// executor will send as much as possible.
 	pub fn with_send_threshold(mut self, send_threshold: usize) -> Self {
 		self.send_threshold = Some(send_threshold);
 		self
@@ -348,6 +353,13 @@ impl ScenarioBuilder {
 	/// Defines the path of the directory where the log file will be stored.
 	pub fn with_base_dir_path(mut self, base_dir_path: String) -> Self {
 		self.base_dir_path = Some(base_dir_path);
+		self
+	}
+
+	/// Use legacy backend. In some scenarios using this may help overcome some RPC related
+	/// problems. Shall be removed in some point in future.
+	pub fn with_legacy_backend(mut self, use_legacy_backend: bool) -> Self {
+		self.use_legacy_backend = use_legacy_backend;
 		self
 	}
 
@@ -471,6 +483,7 @@ impl ScenarioBuilder {
 						} else {
 							None
 						},
+						self.use_legacy_backend,
 					);
 				let sink = new_with_uri_with_accounts_description.await;
 				let txs = self.build_transactions(builder, sink.clone()).await;
@@ -499,6 +512,7 @@ impl ScenarioBuilder {
 					} else {
 						None
 					},
+					self.use_legacy_backend,
 				)
 				.await;
 				let txs = self.build_transactions(builder, sink.clone()).await;

@@ -123,7 +123,7 @@ where
 {
 	pub async fn new() -> Self {
 		Self {
-			api: crate::subxt_api_connector::connect("ws://127.0.0.1:9933")
+			api: crate::subxt_api_connector::connect("ws://127.0.0.1:9933", false)
 				.await
 				.expect(EXPECT_CONNECT),
 			from_accounts: Default::default(),
@@ -137,7 +137,7 @@ where
 
 	pub async fn new_with_uri(uri: &String) -> Self {
 		Self {
-			api: crate::subxt_api_connector::connect(uri).await.expect(EXPECT_CONNECT),
+			api: crate::subxt_api_connector::connect(uri, false).await.expect(EXPECT_CONNECT),
 			from_accounts: Default::default(),
 			to_accounts: Default::default(),
 			nonces: Default::default(),
@@ -152,6 +152,7 @@ where
 		accounts_description: AccountsDescription,
 		generate_pair: G,
 		transaction_monitor: Option<BlockMonitor<C>>,
+		use_legacy_backend: bool,
 	) -> Self
 	where
 		G: GenerateKeyPairFunction<KP>,
@@ -160,7 +161,9 @@ where
 			derive_accounts(accounts_description.clone(), SENDER_SEED, generate_pair);
 		let to_accounts = derive_accounts(accounts_description, RECEIVER_SEED, generate_pair);
 		Self {
-			api: crate::subxt_api_connector::connect(uri).await.expect(EXPECT_CONNECT),
+			api: crate::subxt_api_connector::connect(uri, use_legacy_backend)
+				.await
+				.expect(EXPECT_CONNECT),
 			from_accounts: Arc::from(RwLock::from(from_accounts)),
 			to_accounts: Arc::from(RwLock::from(to_accounts)),
 			nonces: Default::default(),
@@ -217,15 +220,16 @@ where
 
 	async fn update_count(&self) {
 		let i = Instant::now();
-		let xts = self
+		let xts_len = self
 			.rpc_client
 			.request::<Vec<serde_json::Value>>(
 				"author_pendingExtrinsics",
 				subxt_rpcs::rpc_params!(),
 			)
 			.await
-			.expect("author_pendingExtrinsics should not fail");
-		*self.current_pending_extrinsics.write() = Some((i, xts.len()));
+			.expect("author_pendingExtrinsics should not fail")
+			.len();
+		*self.current_pending_extrinsics.write() = Some((i, xts_len));
 	}
 }
 
@@ -285,7 +289,7 @@ where
 	}
 
 	/// Current count of transactions being processed by sink.
-	async fn count(&self) -> usize {
+	async fn pending_extrinsics(&self) -> usize {
 		let current_pending_extrinsics = { *self.current_pending_extrinsics.read() };
 		if let Some((ts, _)) = current_pending_extrinsics {
 			if ts.elapsed() > Duration::from_millis(1000) {

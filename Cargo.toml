@@ -1,6 +1,6 @@
 [package]
 name = "substrate-txtesttool"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 description = "A library and CLI tool for sending transactions to substrate-based chains, enabling developers to test and monitor transaction scenarios."
 license = "Apache-2.0 OR GPL-3.0"
