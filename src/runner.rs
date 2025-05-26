@@ -22,7 +22,7 @@ use tokio::{
 	select,
 	sync::mpsc::{channel, Receiver, Sender},
 };
-use tracing::{debug, info, instrument, trace, Span};
+use tracing::{debug, info, instrument, trace, warn, Span};
 
 const LOG_TARGET: &str = "runner";
 
@@ -122,9 +122,9 @@ impl<H: BlockHash, T: Transaction<HashType = H> + Send> TxTask for DefaultTxTask
 						continue;
 					}
 				}
-				//shall not happen to be here
-				panic!();
-				// ExecutionResult::Error(self.tx().hash())
+				//shall not happen to be here, return error.
+				warn!(target:LOG_TARGET,tx=?self,"stream error");
+				ExecutionResult::Error(self.tx().hash())
 			},
 			Err(e) => {
 				info!(nonce=?self.tx().nonce(),"submit_and_watch: error: {e:?}");
