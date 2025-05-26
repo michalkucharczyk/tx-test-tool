@@ -266,7 +266,7 @@ pub trait TransactionsSink<H: BlockHash>: Send + Sync {
 	async fn submit(&self, tx: &dyn Transaction<HashType = H>) -> Result<H, Error>;
 
 	///Current count of transactions being processed by sink
-	async fn count(&self) -> usize;
+	async fn pending_extrinsics(&self) -> usize;
 
 	fn transaction_monitor(&self) -> Option<&dyn TransactionMonitor<H>>;
 }

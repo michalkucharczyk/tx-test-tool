@@ -312,6 +312,9 @@ impl ScenarioBuilder {
 
 	/// Specifies how many transactions in transaction pool on the node side will be maintained at
 	/// the fork of the best chain.
+	///
+	/// `usize::MAX` means that the count of `pending_extrinsics` on node side is not called, and an
+	/// executor will send as much as possible.
 	pub fn with_send_threshold(mut self, send_threshold: usize) -> Self {
 		self.send_threshold = Some(send_threshold);
 		self

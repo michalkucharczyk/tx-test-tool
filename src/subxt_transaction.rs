@@ -217,15 +217,16 @@ where
 
 	async fn update_count(&self) {
 		let i = Instant::now();
-		let xts = self
+		let xts_len = self
 			.rpc_client
 			.request::<Vec<serde_json::Value>>(
 				"author_pendingExtrinsics",
 				subxt_rpcs::rpc_params!(),
 			)
 			.await
-			.expect("author_pendingExtrinsics should not fail");
-		*self.current_pending_extrinsics.write() = Some((i, xts.len()));
+			.expect("author_pendingExtrinsics should not fail")
+			.len();
+		*self.current_pending_extrinsics.write() = Some((i, xts_len));
 	}
 }
 
@@ -285,7 +286,7 @@ where
 	}
 
 	/// Current count of transactions being processed by sink.
-	async fn count(&self) -> usize {
+	async fn pending_extrinsics(&self) -> usize {
 		let current_pending_extrinsics = { *self.current_pending_extrinsics.read() };
 		if let Some((ts, _)) = current_pending_extrinsics {
 			if ts.elapsed() > Duration::from_millis(1000) {

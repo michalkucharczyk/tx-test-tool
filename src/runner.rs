@@ -184,7 +184,7 @@ impl<T: Transaction> DefaultTxTask<T> {
 
 /// Holds the logic that handles multiple transactions execution on a specific chain.
 pub struct Runner<T: TxTask, Sink: TransactionsSink<TxTaskHash<T>>> {
-	initial_tasks: usize,
+	send_threshold: usize,
 	logs: Logs<T>,
 	transactions: Vec<T>,
 	done: Vec<TxTaskHash<T>>,
@@ -206,7 +206,7 @@ where
 {
 	/// Instantiates a new transactions [`Runner`].
 	pub fn new(
-		initial_tasks: usize,
+		send_threshold: usize,
 		rpc: Sink,
 		transactions: Vec<T>,
 		log_file_name: Option<String>,
@@ -229,7 +229,7 @@ where
 		(
 			tx,
 			Self {
-				initial_tasks,
+				send_threshold,
 				logs,
 				transactions,
 				rpc: rpc.into(),
@@ -257,11 +257,17 @@ where
 		&mut self,
 		workers: &mut FuturesUnordered<Pin<Box<dyn Future<Output = ExecutionResult<T>> + Send>>>,
 	) {
-		let current_count = self.rpc.count().await;
-		let to_consume = self
-			.initial_tasks
-			.saturating_sub(current_count)
-			.saturating_sub(self.event_counters.buffered());
+		let (to_consume, current_count) = if self.send_threshold == usize::MAX {
+			(usize::MAX, None)
+		} else {
+			let current_count = self.rpc.pending_extrinsics().await;
+			(
+				self.send_threshold
+					.saturating_sub(current_count)
+					.saturating_sub(self.event_counters.buffered()),
+				Some(current_count),
+			)
+		};
 		let mut pushed = 0;
 		let counters_displayed = format!("{}", self.event_counters);
 		let mut nonces = vec![];
@@ -286,9 +292,17 @@ where
 		} else {
 			true
 		};
+
 		if display {
 			self.last_displayed = Some(Instant::now());
-			info!(current_count, pushed, min_nonce_sent, "consume pending {}", counters_displayed,);
+			if let Some(current_count) = current_count {
+				info!(
+					current_count,
+					pushed, min_nonce_sent, "consume pending {}", counters_displayed,
+				);
+			} else {
+				info!(pushed, min_nonce_sent, "consume pending {}", counters_displayed,);
+			}
 		};
 	}
 
@@ -325,7 +339,7 @@ where
 		let original_transactions_count = self.transactions.len();
 		let mut workers = FuturesUnordered::new();
 
-		for _ in 0..self.initial_tasks {
+		for _ in 0..self.send_threshold {
 			if let Some(t) = self.transactions.pop() {
 				let t = Box::new(t);
 				let log = self.logs[&t.tx().hash()].clone();
