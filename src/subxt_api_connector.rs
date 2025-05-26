@@ -22,8 +22,7 @@ pub(crate) async fn connect<C: subxt::Config>(
 		let maybe_client = if use_legacy_backend {
 			let backend = subxt::backend::legacy::LegacyBackend::builder()
 				.build(subxt::backend::rpc::RpcClient::new(helpers::client(url).await?));
-			let maybe_client = OnlineClient::from_backend(Arc::new(backend)).await;
-			maybe_client
+			OnlineClient::from_backend(Arc::new(backend)).await
 		} else {
 			let backend = subxt::backend::chain_head::ChainHeadBackend::builder()
 				.transaction_timeout(6 * 3600)
@@ -34,8 +33,7 @@ pub(crate) async fn connect<C: subxt::Config>(
 					helpers::client(url).await?,
 				));
 
-			let maybe_client = OnlineClient::from_backend(Arc::new(backend)).await;
-			maybe_client
+			OnlineClient::from_backend(Arc::new(backend)).await
 		};
 
 		// let maybe_client = OnlineClient::<EthRuntimeConfig>::from_rpc_client(client);

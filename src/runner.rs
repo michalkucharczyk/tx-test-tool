@@ -496,7 +496,7 @@ mod tests {
 		// let api = OnlineClient::<EthRuntimeConfig>::from_insecure_url("ws://127.0.0.1:9933")
 		//     .await
 		//     .unwrap();
-		let api = subxt_api_connector::connect("ws://127.0.0.1:9933").await.unwrap();
+		let api = subxt_api_connector::connect("ws://127.0.0.1:9933", false).await.unwrap();
 
 		let rpc = EthTransactionsSink::new().await;
 
