@@ -539,7 +539,7 @@ mod tests {
 	async fn build_tx_tasks_based_on_scenario_type() {
 		// One shot from derived account based on number id.
 		let sink = FakeTransactionsSink::default();
-		let builder = FakeTransactionBuilder::default();
+		let builder = FakeTransactionBuilder;
 		let scenario_builder = ScenarioBuilder::new().with_start_id(0).with_nonce_from(Some(0));
 		let tasks = scenario_builder.build_transactions(builder, sink).await;
 		assert_eq!(tasks.len(), 1);
@@ -548,7 +548,7 @@ mod tests {
 
 		// One shot from derived account.
 		let sink = FakeTransactionsSink::default();
-		let builder = FakeTransactionBuilder::default();
+		let builder = FakeTransactionBuilder;
 		let scenario_builder = ScenarioBuilder::new()
 			.with_account_id("alice".to_string())
 			.with_nonce_from(Some(0));
@@ -559,7 +559,7 @@ mod tests {
 
 		// Build from single derived account based on number id.
 		let sink = FakeTransactionsSink::default();
-		let builder = FakeTransactionBuilder::default();
+		let builder = FakeTransactionBuilder;
 		let scenario_builder = ScenarioBuilder::new()
 			.with_start_id(1)
 			.with_nonce_from(Some(0))
@@ -573,7 +573,7 @@ mod tests {
 
 		// Buld from single account keyring.
 		let sink = FakeTransactionsSink::default();
-		let builder = FakeTransactionBuilder::default();
+		let builder = FakeTransactionBuilder;
 		let scenario_builder = ScenarioBuilder::new()
 			.with_account_id("alice".to_string())
 			.with_nonce_from(Some(0))
@@ -587,7 +587,7 @@ mod tests {
 
 		// Buld from many derived accounts based on number ids.
 		let sink = FakeTransactionsSink::default();
-		let builder = FakeTransactionBuilder::default();
+		let builder = FakeTransactionBuilder;
 		let scenario_builder = ScenarioBuilder::new()
 			.with_start_id(5)
 			.with_last_id(10)
