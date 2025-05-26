@@ -26,9 +26,8 @@ use tracing::info;
 macro_rules! populate_scenario_builder {
 	($scenario_builder:expr, $scenario_type:expr) => {{
 		match $scenario_type {
-			ScenarioType::OneShot { account, nonce } => {
-				$scenario_builder.with_account_id(account.clone()).with_nonce_from(*nonce)
-			},
+			ScenarioType::OneShot { account, nonce } =>
+				$scenario_builder.with_account_id(account.clone()).with_nonce_from(*nonce),
 			ScenarioType::FromSingleAccount { account, from, count } => $scenario_builder
 				.with_account_id(account.clone())
 				.with_nonce_from(*from)

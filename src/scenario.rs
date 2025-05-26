@@ -356,8 +356,8 @@ impl ScenarioBuilder {
 		self
 	}
 
-	/// Use legacy backend. In some scenarios using this may help overcome some RPC related problems.
-	/// Shall be removed in some point in future.
+	/// Use legacy backend. In some scenarios using this may help overcome some RPC related
+	/// problems. Shall be removed in some point in future.
 	pub fn with_legacy_backend(mut self, use_legacy_backend: bool) -> Self {
 		self.use_legacy_backend = use_legacy_backend;
 		self
