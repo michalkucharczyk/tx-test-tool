@@ -180,6 +180,7 @@ pub struct ScenarioBuilder {
 	log_file_name_prefix: Option<String>,
 	base_dir_path: Option<String>,
 	timeout: Option<Duration>,
+	use_legacy_backend: bool,
 }
 
 impl Default for ScenarioBuilder {
@@ -213,6 +214,7 @@ impl ScenarioBuilder {
 			log_file_name_prefix: None,
 			base_dir_path: None,
 			timeout: None,
+			use_legacy_backend: false,
 		}
 	}
 
@@ -354,6 +356,13 @@ impl ScenarioBuilder {
 		self
 	}
 
+	/// Use legacy backend. In some scenarios using this may help overcome some RPC related problems.
+	/// Shall be removed in some point in future.
+	pub fn with_legacy_backend(mut self, use_legacy_backend: bool) -> Self {
+		self.use_legacy_backend = use_legacy_backend;
+		self
+	}
+
 	/// Returns a set of tasks that handle transaction execution.
 	async fn build_transactions<H, T, S, B>(&self, builder: B, sink: S) -> Vec<DefaultTxTask<T>>
 	where
@@ -474,6 +483,7 @@ impl ScenarioBuilder {
 						} else {
 							None
 						},
+						self.use_legacy_backend,
 					);
 				let sink = new_with_uri_with_accounts_description.await;
 				let txs = self.build_transactions(builder, sink.clone()).await;
@@ -502,6 +512,7 @@ impl ScenarioBuilder {
 					} else {
 						None
 					},
+					self.use_legacy_backend,
 				)
 				.await;
 				let txs = self.build_transactions(builder, sink.clone()).await;

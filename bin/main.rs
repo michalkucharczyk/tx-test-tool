@@ -26,8 +26,9 @@ use tracing::info;
 macro_rules! populate_scenario_builder {
 	($scenario_builder:expr, $scenario_type:expr) => {{
 		match $scenario_type {
-			ScenarioType::OneShot { account, nonce } =>
-				$scenario_builder.with_account_id(account.clone()).with_nonce_from(*nonce),
+			ScenarioType::OneShot { account, nonce } => {
+				$scenario_builder.with_account_id(account.clone()).with_nonce_from(*nonce)
+			},
 			ScenarioType::FromSingleAccount { account, from, count } => $scenario_builder
 				.with_account_id(account.clone())
 				.with_nonce_from(*from)
@@ -118,6 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						desc,
 						generate_ecdsa_keypair,
 						None,
+						false,
 					)
 					.await;
 					let account =
@@ -136,6 +138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						desc,
 						generate_sr25519_keypair,
 						None,
+						false,
 					)
 					.await;
 					let account =
