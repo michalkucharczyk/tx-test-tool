@@ -493,8 +493,8 @@ pub(crate) fn build_eth_tx_payload(
 }
 
 /// Builds a transaction with subxt.
-pub(crate) async fn build_subxt_tx<'a, C, KP, G>(
-	account: &'a str,
+pub(crate) async fn build_subxt_tx<C, KP, G>(
+	account: &str,
 	nonce: &Option<u128>,
 	sink: &SubxtTransactionsSink<C, KP>,
 	recipe: &TransactionRecipe,

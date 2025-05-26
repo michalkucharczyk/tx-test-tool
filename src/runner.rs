@@ -336,7 +336,7 @@ where
 			}
 		}
 
-		let mut timeout = self.timeout.unwrap_or(Duration::from_secs(std::u64::MAX));
+		let mut timeout = self.timeout.unwrap_or(Duration::from_secs(u64::MAX));
 		let mut timeout_reached = false;
 		loop {
 			let iteration_start = Instant::now();

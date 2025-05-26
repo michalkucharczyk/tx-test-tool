@@ -674,7 +674,7 @@ pub mod journal {
 				.collect();
 
 			if let Some(csv_filename) = csv_filename {
-				Self::save_csv(data.clone(), &Path::new(csv_filename));
+				Self::save_csv(data.clone(), Path::new(csv_filename));
 			}
 			data
 		}
