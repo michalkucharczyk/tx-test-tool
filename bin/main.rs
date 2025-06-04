@@ -59,6 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 			send_threshold,
 			remark,
 			tip,
+			use_legacy_backend,
 		} => match chain {
 			ChainType::Fake => {
 				unimplemented!()
@@ -71,6 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					.with_block_monitoring(*block_monitor)
 					.with_watched_txs(!unwatched)
 					.with_installed_ctrlc_stop_hook(true)
+					.with_legacy_backend(*use_legacy_backend)
 					.with_tip(*tip);
 
 				scenario_builder = populate_scenario_builder!(scenario_builder, scenario);
@@ -90,6 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					.with_block_monitoring(*block_monitor)
 					.with_watched_txs(!unwatched)
 					.with_installed_ctrlc_stop_hook(true)
+					.with_legacy_backend(*use_legacy_backend)
 					.with_tip(*tip);
 
 				scenario_builder = populate_scenario_builder!(scenario_builder, scenario);
@@ -118,6 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						desc,
 						generate_ecdsa_keypair,
 						None,
+						false,
 					)
 					.await;
 					let account =
@@ -136,6 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 						desc,
 						generate_sr25519_keypair,
 						None,
+						false,
 					)
 					.await;
 					let account =
@@ -153,10 +158,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				runtime_apis.call_raw("Metadata_metadata", None).await?;
 			println!("{meta:#?}");
 		},
-		CliCommand::BlockMonitor { chain, ws } => {
+		CliCommand::BlockMonitor { chain, ws, display } => {
 			match chain {
 				ChainType::Sub => {
-					let block_monitor = BlockMonitor::<PolkadotConfig>::new(ws).await;
+					let block_monitor =
+						BlockMonitor::<PolkadotConfig>::new_with_options(ws, *display).await;
 					async {
 						loop {
 							tokio::time::sleep(Duration::from_secs(10)).await
@@ -165,7 +171,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					.await;
 				},
 				ChainType::Eth => {
-					let block_monitor = BlockMonitor::<EthRuntimeConfig>::new(ws).await;
+					let block_monitor =
+						BlockMonitor::<EthRuntimeConfig>::new_with_options(ws, *display).await;
 					async {
 						loop {
 							tokio::time::sleep(Duration::from_secs(10)).await
