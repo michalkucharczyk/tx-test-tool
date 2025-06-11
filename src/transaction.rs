@@ -252,6 +252,7 @@ pub trait Transaction: Send + Sync {
 	fn hash(&self) -> Self::HashType;
 	fn as_any(&self) -> &dyn Any;
 	fn nonce(&self) -> u128;
+	fn mortality(&self) -> &Option<u64>;
 	fn account_metadata(&self) -> AccountMetadata;
 }
 
@@ -274,5 +275,5 @@ pub trait TransactionsSink<H: BlockHash>: Send + Sync {
 	///Current count of transactions being processed by sink
 	async fn pending_extrinsics(&self) -> usize;
 
-	fn transaction_monitor(&self) -> Option<&dyn TransactionMonitor<H>>;
+	fn block_monitor(&self) -> Option<&dyn TransactionMonitor<H>>;
 }

@@ -63,7 +63,7 @@ impl TransactionsSink<FakeHash> for FakeTransactionsSink {
 		self.txs.read().len()
 	}
 
-	fn transaction_monitor(&self) -> Option<&dyn TransactionMonitor<FakeHash>> {
+	fn block_monitor(&self) -> Option<&dyn TransactionMonitor<FakeHash>> {
 		None
 	}
 }

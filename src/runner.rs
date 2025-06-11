@@ -3,6 +3,7 @@
 // see LICENSE for license details.
 
 use crate::{
+	error::Error,
 	execution_log::{
 		journal::Journal, make_stats, Counters, ExecutionEvent, ExecutionLog, Logs,
 		TransactionExecutionLog, STAT_TARGET,
@@ -144,13 +145,37 @@ impl<H: BlockHash, T: Transaction<HashType = H> + Send> TxTask for DefaultTxTask
 		log.push_event(ExecutionEvent::sent());
 		match rpc.submit(self.tx()).await {
 			Ok(_) => {
-				log.push_event(ExecutionEvent::submit_result(Ok(())));
 				//todo: block monitor await here (with some global (cli-provided) timeout)
-				if let Some(monitor) = rpc.transaction_monitor() {
-					let hash = monitor.wait(self.tx().hash()).await;
-					log.push_event(ExecutionEvent::finalized_monitor(hash));
+				if let Some(monitor) = rpc.block_monitor() {
+					if let Some(mortality) = self.tx().mortality() {
+						tokio::time::timeout(
+							// Consider that 10 blocks are worth a minute
+							Duration::from_secs((mortality / 10 + 1) * 60),
+							monitor.wait(self.tx().hash()),
+						)
+						.await
+						.map(|hash| {
+							log.push_event(ExecutionEvent::finalized_monitor(hash));
+							ExecutionResult::Done(self.tx().hash())
+						})
+						.unwrap_or_else(|_| {
+							let ev_err = Err(Error::Other(format!(
+								"timeout while waiting for mortal tx: {}",
+								self.tx().hash()
+							)));
+							log.push_event(ExecutionEvent::submit_result(ev_err));
+							ExecutionResult::Error(self.tx().hash())
+						})
+					} else {
+						// todo: add an else branch where we consider a cli-provided global timeout
+						log.push_event(ExecutionEvent::submit_result(Ok(())));
+						ExecutionResult::Done(self.tx.hash())
+					}
+				} else {
+					// todo: add an else branch where we consider a cli-provided global timeout
+					log.push_event(ExecutionEvent::submit_result(Ok(())));
+					ExecutionResult::Done(self.tx.hash())
 				}
-				ExecutionResult::Done(self.tx().hash())
 			},
 			Err(e) => {
 				let result = ExecutionResult::Error(self.tx().hash());
@@ -454,13 +479,18 @@ mod tests {
 
 	fn make_eth_test_transaction(
 		api: &OnlineClient<EthRuntimeConfig>,
+		mortality: Option<u64>,
 		nonce: u64,
 	) -> EthTransaction {
 		let alith = dev::alith();
 		let baltathar = dev::baltathar();
 
-		let tx_params = Params::new().nonce(nonce).build();
+		let mut tx_params = Params::new().nonce(nonce);
+		if let Some(mortal) = mortality {
+			tx_params = tx_params.mortal(mortal);
+		}
 
+		let tx_params = tx_params.build();
 		// let tx_call = subxt::dynamic::tx("System", "remark",
 		// vec![Value::from_bytes("heeelooo")]);
 
@@ -479,6 +509,7 @@ mod tests {
 		let tx = EthTransaction::new(
 			api.tx().create_partial_offline(&tx_call, tx_params).unwrap().sign(&baltathar),
 			nonce as u128,
+			mortality,
 			AccountMetadata::KeyRing("baltathar".to_string()),
 		);
 
@@ -501,7 +532,7 @@ mod tests {
 		let rpc = EthTransactionsSink::new().await;
 
 		let transactions = (0..3000)
-			.map(|i| EthTestTxTask::new_watched(make_eth_test_transaction(&api, i)))
+			.map(|i| EthTestTxTask::new_watched(make_eth_test_transaction(&api, None, i)))
 			.rev()
 			// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
 			.collect::<Vec<_>>();

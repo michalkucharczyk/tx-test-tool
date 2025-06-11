@@ -140,6 +140,9 @@ impl Transaction for FakeTransaction {
 	fn account_metadata(&self) -> AccountMetadata {
 		self.account_metadata.clone()
 	}
+	fn mortality(&self) -> &Option<u64> {
+		&None
+	}
 }
 
 #[allow(dead_code)]
