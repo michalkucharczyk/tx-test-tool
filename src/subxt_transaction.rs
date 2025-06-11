@@ -500,6 +500,7 @@ pub(crate) fn build_eth_tx_payload(
 pub(crate) async fn build_subxt_tx<C, KP, G>(
 	account: &str,
 	nonce: &Option<u128>,
+	mortality: &Option<u64>,
 	sink: &SubxtTransactionsSink<C, KP>,
 	recipe: &TransactionRecipe,
 	generate_payload: G,
@@ -544,11 +545,13 @@ where
 		"build_subxt_tx"
 	);
 
-	let tx_params = <SubstrateExtrinsicParamsBuilder<C>>::new()
-		.nonce(nonce as u64)
-		.tip(recipe.tip)
-		.build()
-		.into();
+	let mut tx_params =
+		<SubstrateExtrinsicParamsBuilder<C>>::new().nonce(nonce as u64).tip(recipe.tip);
+	if let Some(mortal) = mortality {
+		tx_params = tx_params.mortal(*mortal);
+	}
+
+	let tx_params = tx_params.build().into();
 	let tx_call = generate_payload(to_account_id, recipe);
 
 	let tx = SubxtTransaction::<C>::new(

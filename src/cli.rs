@@ -32,7 +32,7 @@ pub enum CliCommand {
 		block_monitor: bool,
 		/// Use mortal transactions.
 		#[clap(long)]
-		mortal: Option<u32>,
+		mortal: Option<u64>,
 		/// Send transactions threshold, sends the batch when number of pedning extrinsics drops
 		/// below this number.
 		#[clap(long, default_value_t = 10000)]

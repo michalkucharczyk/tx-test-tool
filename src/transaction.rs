@@ -30,6 +30,7 @@ pub(crate) trait TransactionBuilder {
 		&self,
 		account: &'a str,
 		nonce: &Option<u128>,
+		mortality: &Option<u64>,
 		sink: &Self::Sink,
 		watched: bool,
 		recipe: &TransactionRecipe,
@@ -49,17 +50,20 @@ impl TransactionBuilder for SubstrateTransactionBuilder {
 		&self,
 		account: &'a str,
 		nonce: &Option<u128>,
+		mortality: &Option<u64>,
 		sink: &Self::Sink,
 		watched: bool,
 		recipe: &TransactionRecipe,
 	) -> DefaultTxTask<Self::Transaction> {
 		if !watched {
 			DefaultTxTask::<Self::Transaction>::new_unwatched(
-				build_subxt_tx(account, nonce, sink, recipe, build_substrate_tx_payload).await,
+				build_subxt_tx(account, nonce, mortality, sink, recipe, build_substrate_tx_payload)
+					.await,
 			)
 		} else {
 			DefaultTxTask::<Self::Transaction>::new_watched(
-				build_subxt_tx(account, nonce, sink, recipe, build_substrate_tx_payload).await,
+				build_subxt_tx(account, nonce, mortality, sink, recipe, build_substrate_tx_payload)
+					.await,
 			)
 		}
 	}
@@ -78,17 +82,18 @@ impl TransactionBuilder for EthTransactionBuilder {
 		&self,
 		account: &'a str,
 		nonce: &Option<u128>,
+		mortality: &Option<u64>,
 		sink: &Self::Sink,
 		watched: bool,
 		recipe: &TransactionRecipe,
 	) -> DefaultTxTask<Self::Transaction> {
 		if !watched {
 			DefaultTxTask::<Self::Transaction>::new_unwatched(
-				build_subxt_tx(account, nonce, sink, recipe, build_eth_tx_payload).await,
+				build_subxt_tx(account, nonce, mortality, sink, recipe, build_eth_tx_payload).await,
 			)
 		} else {
 			DefaultTxTask::<Self::Transaction>::new_watched(
-				build_subxt_tx(account, nonce, sink, recipe, build_eth_tx_payload).await,
+				build_subxt_tx(account, nonce, mortality, sink, recipe, build_eth_tx_payload).await,
 			)
 		}
 	}
@@ -108,6 +113,7 @@ impl TransactionBuilder for FakeTransactionBuilder {
 		&self,
 		account: &'a str,
 		_nonce: &Option<u128>,
+		_mortality: &Option<u64>,
 		sink: &Self::Sink,
 		unwatched: bool,
 		_recipe: &TransactionRecipe,
@@ -198,7 +204,7 @@ impl<H> TransactionStatus<H> {
 	pub(crate) fn get_letter(&self) -> char {
 		match self {
 			TransactionStatus::Validated => 'V',
-			TransactionStatus::Broadcasted { .. } => 'b',
+			TransactionStatus::Broadcasted => 'b',
 			TransactionStatus::InBlock(..) => 'B',
 			TransactionStatus::Finalized(..) => 'F',
 			TransactionStatus::Error { .. } => 'E',
