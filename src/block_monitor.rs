@@ -2,9 +2,9 @@
 // This file is dual-licensed as Apache-2.0 or GPL-3.0.
 // see LICENSE for license details.
 
-use std::{collections::HashMap, marker::PhantomData, pin::Pin};
+use std::{collections::HashMap, pin::Pin, time::Duration};
 
-use crate::transaction::TransactionMonitor;
+use crate::{error::Error, transaction::TransactionMonitor};
 use async_trait::async_trait;
 use clap::ValueEnum;
 use futures::Future;
@@ -43,14 +43,40 @@ impl BlockMonitorDisplayOptions {
 #[derive(Clone)]
 pub struct BlockMonitor<C: subxt::Config> {
 	listener_request_tx: mpsc::Sender<(HashOf<C>, TxFoundListenerTrigger<HashOf<C>>)>,
-	_p: PhantomData<C>,
 }
 
 #[async_trait]
 impl<C: subxt::Config> TransactionMonitor<HashOf<C>> for BlockMonitor<C> {
-	async fn wait(&self, tx_hash: HashOf<C>) -> HashOf<C> {
-		let listener = self.register_listener(tx_hash).await;
-		listener.await.unwrap()
+	async fn wait(
+		&self,
+		tx_hash: HashOf<C>,
+		tx_mortality: &Option<u64>,
+	) -> Result<HashOf<C>, Error> {
+		let callback = async {
+			let listener = self.register_listener(tx_hash).await;
+			listener
+				.await
+				.map_err(|err| Error::Other(format!("error while listening for block hash: {err}")))
+		};
+
+		// Wait under timeout only for mortal txs
+		if let Some(mortality) = tx_mortality {
+			tokio::time::timeout(
+				// Consider that 10 blocks are worth a minute
+				Duration::from_secs((mortality / 10 + 1) * 60),
+				callback,
+			)
+			.await
+			// first map the outer elapsed error if any
+			.map_err(|elapsed| {
+				Error::Other(format!(
+					"waiting for mortal tx finalization timed out after {elapsed} seconds"
+				))
+			})
+			.and_then(|res| res)
+		} else {
+			callback.await
+		}
 	}
 }
 
@@ -63,7 +89,7 @@ impl<C: subxt::Config> BlockMonitor<C> {
 			.expect("should connect to rpc client");
 		let (listener_request_tx, rx) = mpsc::channel(100);
 		tokio::spawn(async { Self::run(api, rx, BlockMonitorDisplayOptions::All).await });
-		Self { listener_request_tx, _p: Default::default() }
+		Self { listener_request_tx }
 	}
 
 	pub async fn new_with_options(uri: &str, options: BlockMonitorDisplayOptions) -> Self {
@@ -73,7 +99,7 @@ impl<C: subxt::Config> BlockMonitor<C> {
 			.expect("should connect to rpc client");
 		let (listener_request_tx, rx) = mpsc::channel(100);
 		tokio::spawn(async move { Self::run(api, rx, options).await });
-		Self { listener_request_tx, _p: Default::default() }
+		Self { listener_request_tx }
 	}
 
 	/// Returns the receiving end of a channel where a notification is sent if the transaction with

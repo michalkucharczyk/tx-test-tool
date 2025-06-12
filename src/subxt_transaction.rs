@@ -58,9 +58,11 @@ pub(crate) type HashOf<C> = <C as subxt::Config>::Hash;
 pub(crate) type AccountIdOf<C> = <C as subxt::Config>::AccountId;
 
 /// A subxt transaction abstraction.
+#[derive(Clone)]
 pub struct SubxtTransaction<C: subxt::Config> {
-	transaction: SubmittableTransaction<C, OnlineClient<C>>,
+	transaction: Arc<SubmittableTransaction<C, OnlineClient<C>>>,
 	nonce: u128,
+	mortality: Option<u64>,
 	account_metadata: AccountMetadata,
 }
 
@@ -77,13 +79,13 @@ impl<C: subxt::Config> SubxtTransaction<C> {
 	pub fn new(
 		transaction: SubmittableTransaction<C, OnlineClient<C>>,
 		nonce: u128,
+		mortality: Option<u64>,
 		account_metadata: AccountMetadata,
 	) -> Self {
-		Self { transaction, nonce, account_metadata }
+		Self { transaction: Arc::new(transaction), nonce, account_metadata, mortality }
 	}
 }
 
-// todo: shall  be part of TransactionSubxt - to update mortality.
 // type TransactionSubxt2 = subxt::tx::DynamicPayload;
 
 impl<C: subxt::Config> Transaction for SubxtTransaction<C> {
@@ -100,6 +102,9 @@ impl<C: subxt::Config> Transaction for SubxtTransaction<C> {
 	fn account_metadata(&self) -> AccountMetadata {
 		self.account_metadata.clone()
 	}
+	fn mortality(&self) -> &Option<u64> {
+		&self.mortality
+	}
 }
 
 #[derive(Clone)]
@@ -110,7 +115,7 @@ pub struct SubxtTransactionsSink<C: subxt::Config, KP: Signer<C>> {
 	nonces: Arc<RwLock<HashMap<String, u128>>>,
 	rpc_client: RpcClient,
 	current_pending_extrinsics: Arc<RwLock<Option<(Instant, usize)>>>,
-	transaction_monitor: Option<BlockMonitor<C>>,
+	block_monitor: Option<BlockMonitor<C>>,
 }
 
 const EXPECT_CONNECT: &str = "should connect to rpc client";
@@ -131,7 +136,7 @@ where
 			nonces: Default::default(),
 			rpc_client: RpcClient::from_url("ws://127.0.0.1:9933").await.expect(EXPECT_CONNECT),
 			current_pending_extrinsics: Arc::new(None.into()),
-			transaction_monitor: None,
+			block_monitor: None,
 		}
 	}
 
@@ -143,7 +148,7 @@ where
 			nonces: Default::default(),
 			rpc_client: RpcClient::from_url(uri).await.expect(EXPECT_CONNECT),
 			current_pending_extrinsics: Arc::new(None.into()),
-			transaction_monitor: None,
+			block_monitor: None,
 		}
 	}
 
@@ -151,7 +156,7 @@ where
 		uri: &str,
 		accounts_description: AccountsDescription,
 		generate_pair: G,
-		transaction_monitor: Option<BlockMonitor<C>>,
+		block_monitor: Option<BlockMonitor<C>>,
 		use_legacy_backend: bool,
 	) -> Self
 	where
@@ -169,7 +174,7 @@ where
 			nonces: Default::default(),
 			rpc_client: crate::helpers::client(uri).await.expect(EXPECT_CONNECT).into(),
 			current_pending_extrinsics: Arc::new(None.into()),
-			transaction_monitor,
+			block_monitor,
 		}
 	}
 
@@ -306,7 +311,7 @@ where
 	}
 
 	fn transaction_monitor(&self) -> Option<&dyn TransactionMonitor<<C as subxt::Config>::Hash>> {
-		self.transaction_monitor
+		self.block_monitor
 			.as_ref()
 			.map(|m| m as &dyn TransactionMonitor<<C as subxt::Config>::Hash>)
 	}
@@ -500,6 +505,7 @@ pub(crate) fn build_eth_tx_payload(
 pub(crate) async fn build_subxt_tx<C, KP, G>(
 	account: &str,
 	nonce: &Option<u128>,
+	mortality: &Option<u64>,
 	sink: &SubxtTransactionsSink<C, KP>,
 	recipe: &TransactionRecipe,
 	generate_payload: G,
@@ -544,11 +550,13 @@ where
 		"build_subxt_tx"
 	);
 
-	let tx_params = <SubstrateExtrinsicParamsBuilder<C>>::new()
-		.nonce(nonce as u64)
-		.tip(recipe.tip)
-		.build()
-		.into();
+	let mut tx_params =
+		<SubstrateExtrinsicParamsBuilder<C>>::new().nonce(nonce as u64).tip(recipe.tip);
+	if let Some(mortal) = mortality {
+		tx_params = tx_params.mortal(*mortal);
+	}
+
+	let tx_params = tx_params.build().into();
 	let tx_call = generate_payload(to_account_id, recipe);
 
 	let tx = SubxtTransaction::<C>::new(
@@ -558,6 +566,7 @@ where
 			.unwrap()
 			.sign(&from_keypair),
 		nonce as u128,
+		*mortality,
 		sink.get_to_account_metadata(account).expect("account metadata exists"),
 	);
 
