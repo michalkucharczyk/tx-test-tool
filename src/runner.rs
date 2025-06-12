@@ -146,7 +146,7 @@ impl<H: BlockHash, T: Transaction<HashType = H> + Send> TxTask for DefaultTxTask
 		match rpc.submit(self.tx()).await {
 			Ok(_) => {
 				//todo: block monitor await here (with some global (cli-provided) timeout)
-				if let Some(monitor) = rpc.block_monitor() {
+				if let Some(monitor) = rpc.transaction_monitor() {
 					if let Some(mortality) = self.tx().mortality() {
 						tokio::time::timeout(
 							// Consider that 10 blocks are worth a minute

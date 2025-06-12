@@ -275,5 +275,5 @@ pub trait TransactionsSink<H: BlockHash>: Send + Sync {
 	///Current count of transactions being processed by sink
 	async fn pending_extrinsics(&self) -> usize;
 
-	fn block_monitor(&self) -> Option<&dyn TransactionMonitor<H>>;
+	fn transaction_monitor(&self) -> Option<&dyn TransactionMonitor<H>>;
 }

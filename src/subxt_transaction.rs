@@ -309,7 +309,7 @@ where
 			.1
 	}
 
-	fn block_monitor(&self) -> Option<&dyn TransactionMonitor<<C as subxt::Config>::Hash>> {
+	fn transaction_monitor(&self) -> Option<&dyn TransactionMonitor<<C as subxt::Config>::Hash>> {
 		self.block_monitor
 			.as_ref()
 			.map(|m| m as &dyn TransactionMonitor<<C as subxt::Config>::Hash>)
