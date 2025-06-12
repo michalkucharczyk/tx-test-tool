@@ -77,10 +77,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 				scenario_builder = populate_scenario_builder!(scenario_builder, scenario);
 
-				// TODO: not sure if these are supposed to work the same as for substrate
-				// if let Some(mortality) = mortal {
-				// 	scenario_builder = scenario_builder.with_mortality(mortal);
-				// }
+				if let Some(mortality) = mortal {
+					scenario_builder = scenario_builder.with_mortality(mortal);
+				}
 
 				if let Some(inner) = remark {
 					scenario_builder = scenario_builder.with_remark_recipe(*inner);
