@@ -259,7 +259,10 @@ pub trait Transaction: Send + Sync {
 /// Interface for monitoring transaction state.
 #[async_trait]
 pub trait TransactionMonitor<H: BlockHash> {
-	async fn wait(&self, tx_hash: H) -> H;
+	/// Wait for the transaction to finalize.
+	///
+	/// If tx is mortal, mortality parameter should be considered when waiting for finalization.
+	async fn wait(&self, tx_hash: H, mortality: &Option<u64>) -> Result<H, Error>;
 }
 
 /// Abstraction for RPC client

@@ -3,7 +3,6 @@
 // see LICENSE for license details.
 
 use crate::{
-	error::Error,
 	execution_log::{
 		journal::Journal, make_stats, Counters, ExecutionEvent, ExecutionLog, Logs,
 		TransactionExecutionLog, STAT_TARGET,
@@ -123,6 +122,7 @@ impl<H: BlockHash, T: Transaction<HashType = H> + Send> TxTask for DefaultTxTask
 						continue;
 					}
 				}
+
 				//shall not happen to be here, return error.
 				warn!(target:LOG_TARGET,tx=?self,"stream error");
 				ExecutionResult::Error(self.tx().hash())
@@ -144,43 +144,24 @@ impl<H: BlockHash, T: Transaction<HashType = H> + Send> TxTask for DefaultTxTask
 	) -> ExecutionResult<Self> {
 		log.push_event(ExecutionEvent::sent());
 		match rpc.submit(self.tx()).await {
-			Ok(_) => {
-				//todo: block monitor await here (with some global (cli-provided) timeout)
+			Ok(_) =>
 				if let Some(monitor) = rpc.transaction_monitor() {
-					if let Some(mortality) = self.tx().mortality() {
-						tokio::time::timeout(
-							// Consider that 10 blocks are worth a minute
-							Duration::from_secs((mortality / 10 + 1) * 60),
-							monitor.wait(self.tx().hash()),
-						)
-						.await
-						.map(|hash| {
-							log.push_event(ExecutionEvent::finalized_monitor(hash));
+					match monitor.wait(self.tx().hash(), self.tx().mortality()).await {
+						Ok(block_hash) => {
+							log.push_event(ExecutionEvent::finalized_monitor(block_hash));
 							ExecutionResult::Done(self.tx().hash())
-						})
-						.unwrap_or_else(|_| {
-							let ev_err = Err(Error::Other(format!(
-								"timeout while waiting for mortal tx: {}",
-								self.tx().hash()
-							)));
-							log.push_event(ExecutionEvent::submit_result(ev_err));
+						},
+						Err(err) => {
+							log.push_event(ExecutionEvent::submit_result(Err(err)));
 							ExecutionResult::Error(self.tx().hash())
-						})
-					} else {
-						// todo: add an else branch where we consider a cli-provided global timeout
-						log.push_event(ExecutionEvent::submit_result(Ok(())));
-						ExecutionResult::Done(self.tx.hash())
+						},
 					}
 				} else {
-					// todo: add an else branch where we consider a cli-provided global timeout
-					log.push_event(ExecutionEvent::submit_result(Ok(())));
-					ExecutionResult::Done(self.tx.hash())
-				}
-			},
+					ExecutionResult::Done(self.tx().hash())
+				},
 			Err(e) => {
-				let result = ExecutionResult::Error(self.tx().hash());
 				log.push_event(ExecutionEvent::submit_result(Err(e)));
-				result
+				ExecutionResult::Error(self.tx().hash())
 			},
 		}
 	}
@@ -208,12 +189,12 @@ impl<T: Transaction> DefaultTxTask<T> {
 }
 
 /// Holds the logic that handles multiple transactions execution on a specific chain.
-pub struct Runner<T: TxTask, Sink: TransactionsSink<TxTaskHash<T>>> {
+pub struct Runner<Task: TxTask, Sink: TransactionsSink<TxTaskHash<Task>>> {
 	send_threshold: usize,
-	logs: Logs<T>,
-	transactions: Vec<T>,
-	done: Vec<TxTaskHash<T>>,
-	errors: Vec<TxTaskHash<T>>,
+	logs: Logs<Task>,
+	transactions: Vec<Task>,
+	done: Vec<TxTaskHash<Task>>,
+	errors: Vec<TxTaskHash<Task>>,
 	rpc: Arc<Sink>,
 	stop_rx: Receiver<()>,
 	timeout: Option<Duration>,
@@ -224,16 +205,16 @@ pub struct Runner<T: TxTask, Sink: TransactionsSink<TxTaskHash<T>>> {
 	executor_id: Option<String>,
 }
 
-impl<T: TxTask + 'static, Sink> Runner<T, Sink>
+impl<Task: TxTask + 'static, Sink> Runner<Task, Sink>
 where
-	Sink: TransactionsSink<TxTaskHash<T>> + 'static,
-	TxTaskHash<T>: 'static,
+	Sink: TransactionsSink<TxTaskHash<Task>> + 'static,
+	TxTaskHash<Task>: 'static,
 {
 	/// Instantiates a new transactions [`Runner`].
 	pub fn new(
 		send_threshold: usize,
 		rpc: Sink,
-		transactions: Vec<T>,
+		transactions: Vec<Task>,
 		log_file_name: Option<String>,
 		base_dir_path: Option<String>,
 		executor_id: Option<String>,
@@ -271,7 +252,7 @@ where
 		)
 	}
 
-	fn pop(&mut self) -> Option<T> {
+	fn pop(&mut self) -> Option<Task> {
 		trace!(target:LOG_TARGET, "before pop");
 		let r = self.transactions.pop();
 		trace!(target:LOG_TARGET, "after pop {}", r.is_some());
@@ -280,7 +261,7 @@ where
 
 	async fn consume_pending(
 		&mut self,
-		workers: &mut FuturesUnordered<Pin<Box<dyn Future<Output = ExecutionResult<T>> + Send>>>,
+		workers: &mut FuturesUnordered<Pin<Box<dyn Future<Output = ExecutionResult<Task>> + Send>>>,
 	) {
 		let (to_consume, current_count) = if self.send_threshold == usize::MAX {
 			(usize::MAX, None)
@@ -354,7 +335,7 @@ where
 
 	/// Drives the runner to completion.
 	#[instrument(skip(self), fields(id = tracing::field::Empty))]
-	pub async fn run(&mut self) -> Logs<T> {
+	pub async fn run(&mut self) -> Logs<Task> {
 		let span = Span::current();
 		if let Some(id) = &self.executor_id {
 			span.record("id", id);
@@ -423,7 +404,7 @@ where
 			timeout = timeout.saturating_sub(iteration_start.elapsed());
 		}
 
-		Journal::<T>::save_logs(self.logs.clone(), Path::new(self.log_file_path().as_str()));
+		Journal::<Task>::save_logs(self.logs.clone(), Path::new(self.log_file_path().as_str()));
 		info!(target: STAT_TARGET, total_duration = ?start.elapsed(), ?original_transactions_count, ?timeout_reached);
 		make_stats(self.logs.values().cloned(), false);
 		self.logs.clone()

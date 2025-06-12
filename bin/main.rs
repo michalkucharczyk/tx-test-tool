@@ -78,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 				scenario_builder = populate_scenario_builder!(scenario_builder, scenario);
 
 				if let Some(mortality) = mortal {
-					scenario_builder = scenario_builder.with_mortality(mortal);
+					scenario_builder = scenario_builder.with_mortality(*mortality);
 				}
 
 				if let Some(inner) = remark {

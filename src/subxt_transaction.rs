@@ -58,8 +58,9 @@ pub(crate) type HashOf<C> = <C as subxt::Config>::Hash;
 pub(crate) type AccountIdOf<C> = <C as subxt::Config>::AccountId;
 
 /// A subxt transaction abstraction.
+#[derive(Clone)]
 pub struct SubxtTransaction<C: subxt::Config> {
-	transaction: SubmittableTransaction<C, OnlineClient<C>>,
+	transaction: Arc<SubmittableTransaction<C, OnlineClient<C>>>,
 	nonce: u128,
 	mortality: Option<u64>,
 	account_metadata: AccountMetadata,
@@ -81,7 +82,7 @@ impl<C: subxt::Config> SubxtTransaction<C> {
 		mortality: Option<u64>,
 		account_metadata: AccountMetadata,
 	) -> Self {
-		Self { transaction, nonce, account_metadata, mortality }
+		Self { transaction: Arc::new(transaction), nonce, account_metadata, mortality }
 	}
 }
 
