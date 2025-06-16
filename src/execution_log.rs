@@ -166,6 +166,9 @@ pub trait ExecutionLog: Sync + Send {
 	/// Returns the hash of the finalized block, if available.
 	fn finalized(&self) -> Option<Self::HashType>;
 
+	/// Returns the dropped txs and their reason.
+	fn dropped(&self) -> Option<String>;
+
 	/// Determines if the transaction's progress is being monitored. If not, some events are not
 	/// available.
 	fn is_watched(&self) -> bool;
@@ -342,6 +345,14 @@ impl<H: BlockHash + 'static> ExecutionLog for TransactionExecutionLog<H> {
 	fn finalized(&self) -> Option<Self::HashType> {
 		self.events.read().iter().find_map(|e| match e {
 			ExecutionEvent::TxPoolEvent(_, TransactionStatus::Finalized(h)) => Some(*h),
+			_ => None,
+		})
+	}
+
+	fn dropped(&self) -> Option<String> {
+		self.events.read().iter().find_map(|e| match e {
+			ExecutionEvent::TxPoolEvent(_, TransactionStatus::Dropped(reason)) =>
+				Some(reason.clone()),
 			_ => None,
 		})
 	}

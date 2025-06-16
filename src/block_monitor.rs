@@ -70,7 +70,8 @@ impl<C: subxt::Config> TransactionMonitor<HashOf<C>> for BlockMonitor<C> {
 			// first map the outer elapsed error if any
 			.map_err(|elapsed| {
 				Error::Other(format!(
-					"waiting for mortal tx finalization timed out after {elapsed} seconds"
+					"waiting for mortal tx finalization timed out after {} seconds",
+					elapsed
 				))
 			})
 			.and_then(|res| res)

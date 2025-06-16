@@ -267,14 +267,19 @@ impl ScenarioBuilder {
 		self
 	}
 
-	/// The builder is already initialised with a transfer transaction recipe with a tip of 0
-	/// and this API lets builders set it specifically with a certain tip amount.
+	/// Sets transaction recipe to a regular balances transfer.
+	///
+	/// The builder is already initialised with a transfer transaction recipe with a tip of 0.
+	/// If a tip is set, the builder will update the tip of the transaction recipe accordingly.
 	pub fn with_transfer_recipe(mut self) -> Self {
 		self.tx_recipe = Some(TransactionRecipe::transfer(self.tip));
 		self
 	}
 
-	/// Set a remark transaction recipe with a certain tip.
+	/// Set a remark transaction recipe.
+	///
+	/// If a tip is set, the builder will update the tip of the transaction recipe
+	/// accordingly.
 	pub fn with_remark_recipe(mut self, remark: u32) -> Self {
 		self.tx_recipe = Some(TransactionRecipe::remark(remark, self.tip));
 		self

@@ -19,9 +19,12 @@ use std::{
 };
 use subxt::{
 	backend::rpc::RpcClient,
-	config::transaction_extensions::{
-		ChargeAssetTxPaymentParams, ChargeTransactionPaymentParams, CheckMortalityParams,
-		CheckNonceParams,
+	config::{
+		transaction_extensions::{
+			ChargeAssetTxPaymentParams, ChargeTransactionPaymentParams, CheckMortalityParams,
+			CheckNonceParams,
+		},
+		DefaultExtrinsicParams, ExtrinsicParams,
 	},
 	dynamic::{At, Value},
 	ext::scale_value::value,
@@ -33,9 +36,10 @@ use subxt_signer::{
 	eth::{dev as eth_dev, Keypair as EthKeypair, Signature},
 	sr25519::{dev as sr25519_dev, Keypair as SrPair},
 };
-use tracing::{debug, trace};
+use tracing::{debug, error, trace};
 
 const LOG_TARGET: &str = "subxt_tx";
+const DEFAULT_RETRIES_FOR_PARTIAL_TX_CREATION: usize = 10;
 
 #[derive(Clone)]
 /// Ethereum runtime config definition for subxt usage purposes.
@@ -545,26 +549,82 @@ where
 		target:LOG_TARGET,
 		account,
 		nonce,
-		from_account=hex::encode(from_account_id),
+		?mortality,
+		from_account=hex::encode(from_account_id.clone()),
 		to_account=hex::encode(to_account_id.clone()),
 		"build_subxt_tx"
 	);
 
-	let mut tx_params =
-		<SubstrateExtrinsicParamsBuilder<C>>::new().nonce(nonce as u64).tip(recipe.tip);
-	if let Some(mortal) = mortality {
-		tx_params = tx_params.mortal(*mortal);
+	// Needed because `Params` as associated type does not implement clone, and we need to recreate
+	// the tx params in a loop when we can't create a partial tx with the online client, due to
+	// various RPC related issues or state not being up to date (currently we handle an error
+	// which happens when trying to create a partial tx that is based on a certain finalized block
+	// returned by the RPC, which is then reported as not found). Retrying seems to fix the issue.
+	fn tx_params<CC: subxt::Config>(
+		mortality: &Option<u64>,
+		nonce: u64,
+		recipe: &TransactionRecipe,
+	) -> <DefaultExtrinsicParams<CC> as ExtrinsicParams<CC>>::Params {
+		let mut params = <SubstrateExtrinsicParamsBuilder<CC>>::new().nonce(nonce).tip(recipe.tip);
+		if let Some(mortal) = mortality {
+			params = params.mortal(*mortal);
+		}
+		params.build()
 	}
 
-	let tx_params = tx_params.build().into();
-	let tx_call = generate_payload(to_account_id, recipe);
+	let params = tx_params(mortality, nonce as u64, recipe);
+	let tx_call = generate_payload(to_account_id.clone(), recipe);
+
+	// Creating the tx with the online client here to be able to correctly support mortal txs.
+	// The consequence is that the client will fetch the last finalized block (for mortality
+	// reasons) if any and the
+	// account nonce, and inject them in the tx params. When mortality is set to none, the block is
+	// not injected, and if nonce is already set, it is left untouched.
+	let mut unsigned_tx =
+		match sink.api().tx().create_partial(&tx_call, &from_account_id, params.into()).await {
+			Ok(inner) => inner,
+			Err(err) => match err {
+				subxt::Error::Block(subxt::error::BlockError::NotFound(_)) => {
+					let mut tx = None;
+					for i in 0..DEFAULT_RETRIES_FOR_PARTIAL_TX_CREATION {
+						let params = tx_params(mortality, nonce as u64, recipe);
+						match sink
+							.api()
+							.tx()
+							.create_partial(&tx_call, &from_account_id, params.into())
+							.await
+						{
+							Ok(inner) => {
+								tx = Some(inner);
+								break;
+							},
+							Err(err) => {
+								debug!(target: LOG_TARGET, iteration=i, %err, "failed creating partial tx with online client");
+								continue;
+							},
+						}
+					}
+
+					tx.expect("Unable to create transaction. Check error logs for more info!")
+				},
+				_ => {
+					error!(
+						target: LOG_TARGET,
+						account,
+						nonce,
+						?mortality,
+						from_account=hex::encode(from_account_id.clone()),
+						to_account=hex::encode(to_account_id.clone()),
+						%err,
+						"build_subxt_tx: create partial tx failure"
+					);
+					panic!("Unable to create transaction. Check error logs for more info!");
+				},
+			},
+		};
 
 	let tx = SubxtTransaction::<C>::new(
-		sink.api()
-			.tx()
-			.create_partial_offline(&tx_call, tx_params)
-			.unwrap()
-			.sign(&from_keypair),
+		unsigned_tx.sign(&from_keypair),
 		nonce as u128,
 		*mortality,
 		sink.get_to_account_metadata(account).expect("account metadata exists"),

@@ -25,7 +25,7 @@
 //!     let scenario_executor = ScenarioBuilder::new()
 //!         .with_rpc_uri(ws.to_string())
 //!         .with_chain_type(ChainType::Sub)
-//!         .with_block_monitoring(block_monitor)
+//!         .with_block_monitoring(true)
 //!         .with_start_id("0".to_string())
 //!         .with_last_id(99)
 //!         .with_nonce_from(Some(0))
