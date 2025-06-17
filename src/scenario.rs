@@ -302,6 +302,10 @@ impl ScenarioBuilder {
 	}
 
 	/// Sets for how many blocks a transaction is considered valid, and expected to finalize.
+	/// Note: using this setter can increase the transaction creation times which can impact heavy
+	/// load tests that create millions of transactions. This method instructs a scenario to use
+	/// an online client for txs creation, since creating mortal txs requires knowledge about the
+	/// last finalized block on chain.
 	pub fn with_mortality(mut self, mortality: u64) -> Self {
 		self.mortality = Some(mortality);
 		self

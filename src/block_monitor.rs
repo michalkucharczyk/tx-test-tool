@@ -2,7 +2,7 @@
 // This file is dual-licensed as Apache-2.0 or GPL-3.0.
 // see LICENSE for license details.
 
-use std::{collections::HashMap, pin::Pin, time::Duration};
+use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
 
 use crate::{error::Error, transaction::TransactionMonitor};
 use async_trait::async_trait;
@@ -14,7 +14,7 @@ use tokio::{
 	select,
 	sync::{mpsc, oneshot},
 };
-use tracing::{info, trace};
+use tracing::{error, info, trace};
 
 /// Monitors if transactions are part of finalized blocks and notifies external listeners when
 /// found.
@@ -43,40 +43,51 @@ impl BlockMonitorDisplayOptions {
 #[derive(Clone)]
 pub struct BlockMonitor<C: subxt::Config> {
 	listener_request_tx: mpsc::Sender<(HashOf<C>, TxFoundListenerTrigger<HashOf<C>>)>,
+	client: Arc<OnlineClient<C>>,
 }
 
 #[async_trait]
 impl<C: subxt::Config> TransactionMonitor<HashOf<C>> for BlockMonitor<C> {
-	async fn wait(
-		&self,
-		tx_hash: HashOf<C>,
-		tx_mortality: &Option<u64>,
-	) -> Result<HashOf<C>, Error> {
-		let callback = async {
-			let listener = self.register_listener(tx_hash).await;
-			listener
-				.await
-				.map_err(|err| Error::Other(format!("error while listening for block hash: {err}")))
-		};
+	async fn wait(&self, tx_hash: HashOf<C>, until: Option<u64>) -> Result<HashOf<C>, Error> {
+		let listener = self.register_listener(tx_hash).await;
+		// Wait until block number is a finalized block
+		if let Some(block_number) = until {
+			let res = self.client.blocks().subscribe_finalized().await;
+			let mut total_waiting = 0;
+			if let Ok(stream) = res {
+				while let Some(Ok(block)) = stream.next().await {
+					// Allow waiting for the tx to be finalized in next two blocks at most.
+					if block.number().into() >= block_number {
+						break;
+					}
 
-		// Wait under timeout only for mortal txs
-		if let Some(mortality) = tx_mortality {
-			tokio::time::timeout(
-				// Consider that 10 blocks are worth a minute
-				Duration::from_secs((mortality / 10 + 1) * 60),
-				callback,
-			)
-			.await
-			// first map the outer elapsed error if any
-			.map_err(|elapsed| {
+					// Wait at maximum 6 seconds before giving up and checking whether a finalized
+					// block greater than the one we want to wait happened.
+					match tokio::time::timeout(Duration::from_secs(6), listener).await {
+						Ok(inner) =>
+							return inner.map_err(|err| {
+								Error::Other(format!(
+								"error while listening for block hash where tx was finalized: {}",
+								err
+							))
+							}),
+						Err(_) => {
+							total_waiting += 6;
+							continue;
+						},
+					}
+				}
+			}
+
+			error!(tx_hash, total_waiting, "waiting for tx to finalize failed");
+			Err(Error::Other(format!("waiting for tx {} to finalize failed", tx_hash)))
+		} else {
+			listener.await.map_err(|err| {
 				Error::Other(format!(
-					"waiting for mortal tx finalization timed out after {} seconds",
-					elapsed
+					"error while listening for block hash where tx was finalized: {}",
+					err
 				))
 			})
-			.and_then(|res| res)
-		} else {
-			callback.await
 		}
 	}
 }
@@ -85,22 +96,28 @@ impl<C: subxt::Config> BlockMonitor<C> {
 	/// Instantiates a [`BlockMonitor`].
 	pub async fn new(uri: &str) -> Self {
 		trace!(uri, "BlockNumber::new");
-		let api = OnlineClient::<C>::from_insecure_url(uri)
-			.await
-			.expect("should connect to rpc client");
+		let api = Arc::new(
+			OnlineClient::<C>::from_insecure_url(uri)
+				.await
+				.expect("should connect to rpc client"),
+		);
 		let (listener_request_tx, rx) = mpsc::channel(100);
-		tokio::spawn(async { Self::run(api, rx, BlockMonitorDisplayOptions::All).await });
-		Self { listener_request_tx }
+		let api_clone = api.clone();
+		tokio::spawn(async { Self::run(api_clone, rx, BlockMonitorDisplayOptions::All).await });
+		Self { listener_request_tx, client: api }
 	}
 
 	pub async fn new_with_options(uri: &str, options: BlockMonitorDisplayOptions) -> Self {
 		trace!(uri, "BlockNumber::new");
-		let api = OnlineClient::<C>::from_insecure_url(uri)
-			.await
-			.expect("should connect to rpc client");
+		let api = Arc::new(
+			OnlineClient::<C>::from_insecure_url(uri)
+				.await
+				.expect("should connect to rpc client"),
+		);
 		let (listener_request_tx, rx) = mpsc::channel(100);
-		tokio::spawn(async move { Self::run(api, rx, options).await });
-		Self { listener_request_tx }
+		let api_clone = api.clone();
+		tokio::spawn(async move { Self::run(api_clone, rx, options).await });
+		Self { listener_request_tx, client: api }
 	}
 
 	/// Returns the receiving end of a channel where a notification is sent if the transaction with
@@ -142,7 +159,7 @@ impl<C: subxt::Config> BlockMonitor<C> {
 	}
 
 	async fn block_monitor_inner(
-		api: OnlineClient<C>,
+		api: Arc<OnlineClient<C>>,
 		mut listener_request_rx: mpsc::Receiver<(HashOf<C>, TxFoundListenerTrigger<HashOf<C>>)>,
 		options: BlockMonitorDisplayOptions,
 	) -> Result<(), Box<dyn std::error::Error>> {
@@ -169,7 +186,7 @@ impl<C: subxt::Config> BlockMonitor<C> {
 	}
 
 	async fn run(
-		api: OnlineClient<C>,
+		api: Arc<OnlineClient<C>>,
 		listener_requrest_rx: mpsc::Receiver<(HashOf<C>, TxFoundListenerTrigger<HashOf<C>>)>,
 		options: BlockMonitorDisplayOptions,
 	) {

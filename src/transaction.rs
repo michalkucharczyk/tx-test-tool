@@ -252,7 +252,7 @@ pub trait Transaction: Send + Sync {
 	fn hash(&self) -> Self::HashType;
 	fn as_any(&self) -> &dyn Any;
 	fn nonce(&self) -> u128;
-	fn mortality(&self) -> &Option<u64>;
+	fn valid_until(&self) -> &Option<u64>;
 	fn account_metadata(&self) -> AccountMetadata;
 }
 
@@ -261,8 +261,8 @@ pub trait Transaction: Send + Sync {
 pub trait TransactionMonitor<H: BlockHash> {
 	/// Wait for the transaction to finalize.
 	///
-	/// If tx is mortal, mortality parameter should be considered when waiting for finalization.
-	async fn wait(&self, tx_hash: H, mortality: &Option<u64>) -> Result<H, Error>;
+	/// An optional block number is given to be considered for waiting when needed.
+	async fn wait(&self, tx_hash: H, until: Option<u64>) -> Result<H, Error>;
 }
 
 /// Abstraction for RPC client

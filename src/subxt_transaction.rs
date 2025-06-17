@@ -66,7 +66,7 @@ pub(crate) type AccountIdOf<C> = <C as subxt::Config>::AccountId;
 pub struct SubxtTransaction<C: subxt::Config> {
 	transaction: Arc<SubmittableTransaction<C, OnlineClient<C>>>,
 	nonce: u128,
-	mortality: Option<u64>,
+	valid_until: Option<u64>,
 	account_metadata: AccountMetadata,
 }
 
@@ -83,10 +83,10 @@ impl<C: subxt::Config> SubxtTransaction<C> {
 	pub fn new(
 		transaction: SubmittableTransaction<C, OnlineClient<C>>,
 		nonce: u128,
-		mortality: Option<u64>,
+		valid_until: Option<u64>,
 		account_metadata: AccountMetadata,
 	) -> Self {
-		Self { transaction: Arc::new(transaction), nonce, account_metadata, mortality }
+		Self { transaction: Arc::new(transaction), nonce, account_metadata, valid_until }
 	}
 }
 
@@ -106,8 +106,8 @@ impl<C: subxt::Config> Transaction for SubxtTransaction<C> {
 	fn account_metadata(&self) -> AccountMetadata {
 		self.account_metadata.clone()
 	}
-	fn mortality(&self) -> &Option<u64> {
-		&self.mortality
+	fn valid_until(&self) -> &Option<u64> {
+		&self.valid_until
 	}
 }
 
@@ -505,6 +505,136 @@ pub(crate) fn build_eth_tx_payload(
 	}
 }
 
+async fn create_transaction<C: subxt::Config, KP, G>(
+	from_keypair: &KP,
+	nonce: u128,
+	mortality: &Option<u64>,
+	account: &str,
+	sink: &SubxtTransactionsSink<C, KP>,
+	from_account_id: &<C as subxt::Config>::AccountId,
+	to_account_id: &<C as subxt::Config>::AccountId,
+	recipe: &TransactionRecipe,
+	generate_payload: G,
+) -> Result<SubxtTransaction<C>, Error>
+where
+	G: GenerateTxPayloadFunction<AccountIdOf<C>>,
+	AccountIdOf<C>: Send + Sync + AsRef<[u8]>,
+	KP: Signer<C> + Clone + Send + Sync + 'static,
+	<<C as subxt::Config>::ExtrinsicParams as subxt::config::ExtrinsicParams<C>>::Params: From<(
+		(),
+		(),
+		(),
+		CheckNonceParams,
+		(),
+		CheckMortalityParams<C>,
+		ChargeAssetTxPaymentParams<C>,
+		ChargeTransactionPaymentParams,
+		(),
+	)>,
+{
+	// Needed because `Params` as associated type does not implement clone, and we need to
+	// recreate the tx params in a loop when we can't create a partial tx with the online
+	// client, due to various RPC related issues or state not being up to date (currently we
+	// handle an error which happens when trying to create a partial tx that is based on a
+	// certain finalized block returned by the RPC, which is then reported as not found).
+	// Retrying seems to fix the issue.
+	fn tx_params<CC: subxt::Config>(
+		mortality: &Option<u64>,
+		nonce: u64,
+		recipe: &TransactionRecipe,
+	) -> <DefaultExtrinsicParams<CC> as ExtrinsicParams<CC>>::Params {
+		let mut params = <SubstrateExtrinsicParamsBuilder<CC>>::new().nonce(nonce).tip(recipe.tip);
+		if let Some(mortal) = mortality {
+			params = params.mortal(*mortal);
+		}
+		params.build()
+	}
+
+	let params = tx_params(mortality, nonce as u64, recipe);
+	let tx_call = generate_payload(to_account_id.clone(), recipe);
+	match sink.api().tx().create_partial(&tx_call, from_account_id, params.into()).await {
+		Ok(mut tx) => {
+			let block_ref = sink
+				.api()
+				.backend()
+				.latest_finalized_block_ref()
+				.await
+				.expect("to get the last finalized block ref. qed");
+			let block = sink
+				.api()
+				.blocks()
+				.at(block_ref)
+				.await
+				.expect("to get the corresponding block header. qed");
+			let submittable_tx = tx.sign(from_keypair);
+			let hash = submittable_tx.hash();
+			let tx = SubxtTransaction::<C>::new(
+				submittable_tx,
+				nonce,
+				mortality.map(|mortal| block.number().into() + mortal),
+				sink.get_to_account_metadata(account).expect("account metadata exists"),
+			);
+			debug!(target:LOG_TARGET,"built mortal tx hash: {:?}", hash);
+			Ok(tx)
+		},
+		Err(err) => match err {
+			subxt::Error::Block(subxt::error::BlockError::NotFound(_)) => {
+				let tx_call = generate_payload(to_account_id.clone(), recipe);
+				for _ in 0..DEFAULT_RETRIES_FOR_PARTIAL_TX_CREATION {
+					let params = tx_params(mortality, nonce as u64, recipe);
+					match sink
+						.api()
+						.tx()
+						.create_partial(&tx_call, from_account_id, params.into())
+						.await
+					{
+						Ok(mut tx) => {
+							let block_ref = sink
+								.api()
+								.backend()
+								.latest_finalized_block_ref()
+								.await
+								.expect("to get the last finalized block ref. qed");
+							let block = sink
+								.api()
+								.blocks()
+								.at(block_ref)
+								.await
+								.expect("to get the corresponding block header. qed");
+							let submittable_tx = tx.sign(from_keypair);
+							let hash = submittable_tx.hash();
+							let subxt_tx = SubxtTransaction::<C>::new(
+								submittable_tx,
+								nonce,
+								mortality.map(|mortal| block.number().into() + mortal),
+								sink.get_to_account_metadata(account)
+									.expect("account metadata exists"),
+							);
+							debug!(target:LOG_TARGET,"built mortal tx hash: {:?}", hash);
+							return Ok(subxt_tx)
+						},
+						Err(_) => continue,
+					}
+				}
+				Err(Error::Other(format!("Creating transaction after {DEFAULT_RETRIES_FOR_PARTIAL_TX_CREATION} iterations failed. Check logs for more info!")))
+			},
+			err => {
+				error!(
+					target: LOG_TARGET,
+					account,
+					nonce,
+					?mortality,
+					from_account=hex::encode(from_account_id.clone()),
+					to_account=hex::encode(to_account_id.clone()),
+					%err,
+					"build_subxt_tx: create partial tx failure"
+				);
+				Err(Error::Other(format!("can not create transaction due to: {}", err)))
+			},
+		},
+	}
+}
+
 /// Builds a transaction with subxt.
 pub(crate) async fn build_subxt_tx<C, KP, G>(
 	account: &str,
@@ -555,84 +685,42 @@ where
 		"build_subxt_tx"
 	);
 
-	// Needed because `Params` as associated type does not implement clone, and we need to recreate
-	// the tx params in a loop when we can't create a partial tx with the online client, due to
-	// various RPC related issues or state not being up to date (currently we handle an error
-	// which happens when trying to create a partial tx that is based on a certain finalized block
-	// returned by the RPC, which is then reported as not found). Retrying seems to fix the issue.
-	fn tx_params<CC: subxt::Config>(
-		mortality: &Option<u64>,
-		nonce: u64,
-		recipe: &TransactionRecipe,
-	) -> <DefaultExtrinsicParams<CC> as ExtrinsicParams<CC>>::Params {
-		let mut params = <SubstrateExtrinsicParamsBuilder<CC>>::new().nonce(nonce).tip(recipe.tip);
-		if let Some(mortal) = mortality {
-			params = params.mortal(*mortal);
-		}
-		params.build()
+	if let Ok(tx) = create_transaction(
+		&from_keypair,
+		nonce,
+		mortality,
+		account,
+		sink,
+		&from_account_id,
+		&to_account_id,
+		&recipe,
+		generate_payload,
+	)
+	.await
+	{
+		tx
+	} else {
+		let params = <SubstrateExtrinsicParamsBuilder<C>>::new()
+			.nonce(nonce as u64)
+			.tip(recipe.tip)
+			.build();
+		let tx_call = generate_payload(to_account_id, recipe);
+		let tx = SubxtTransaction::<C>::new(
+			sink.api()
+				.tx()
+				.create_partial_offline(&tx_call, params.into())
+				.unwrap()
+				.sign(&from_keypair),
+			nonce as u128,
+			None,
+			sink.get_to_account_metadata(account).expect("account metadata exists"),
+		);
+		debug!(target:LOG_TARGET,"built immortal tx hash: {:?}", tx.hash());
+		tx
 	}
 
-	let params = tx_params(mortality, nonce as u64, recipe);
-	let tx_call = generate_payload(to_account_id.clone(), recipe);
-
-	// Creating the tx with the online client here to be able to correctly support mortal txs.
-	// The consequence is that the client will fetch the last finalized block (for mortality
-	// reasons) if any and the
-	// account nonce, and inject them in the tx params. When mortality is set to none, the block is
-	// not injected, and if nonce is already set, it is left untouched.
-	let mut unsigned_tx =
-		match sink.api().tx().create_partial(&tx_call, &from_account_id, params.into()).await {
-			Ok(inner) => inner,
-			Err(err) => match err {
-				subxt::Error::Block(subxt::error::BlockError::NotFound(_)) => {
-					let mut tx = None;
-					for i in 0..DEFAULT_RETRIES_FOR_PARTIAL_TX_CREATION {
-						let params = tx_params(mortality, nonce as u64, recipe);
-						match sink
-							.api()
-							.tx()
-							.create_partial(&tx_call, &from_account_id, params.into())
-							.await
-						{
-							Ok(inner) => {
-								tx = Some(inner);
-								break;
-							},
-							Err(err) => {
-								debug!(target: LOG_TARGET, iteration=i, %err, "failed creating partial tx with online client");
-								continue;
-							},
-						}
-					}
-
-					tx.expect("Unable to create transaction. Check error logs for more info!")
-				},
-				_ => {
-					error!(
-						target: LOG_TARGET,
-						account,
-						nonce,
-						?mortality,
-						from_account=hex::encode(from_account_id.clone()),
-						to_account=hex::encode(to_account_id.clone()),
-						%err,
-						"build_subxt_tx: create partial tx failure"
-					);
-					panic!("Unable to create transaction. Check error logs for more info!");
-				},
-			},
-		};
-
-	let tx = SubxtTransaction::<C>::new(
-		unsigned_tx.sign(&from_keypair),
-		nonce as u128,
-		*mortality,
-		sink.get_to_account_metadata(account).expect("account metadata exists"),
-	);
-
-	debug!(target:LOG_TARGET,"built tx hash: {:?}", tx.hash());
-
-	tx
+	// } else {
+	// 	}
 }
 
 #[cfg(test)]

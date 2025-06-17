@@ -143,10 +143,12 @@ impl<H: BlockHash, T: Transaction<HashType = H> + Send> TxTask for DefaultTxTask
 		rpc: Arc<dyn TransactionsSink<TxTaskHash<Self>>>,
 	) -> ExecutionResult<Self> {
 		log.push_event(ExecutionEvent::sent());
+
 		match rpc.submit(self.tx()).await {
 			Ok(_) =>
 				if let Some(monitor) = rpc.transaction_monitor() {
-					match monitor.wait(self.tx().hash(), self.tx().mortality()).await {
+					log.push_event(ExecutionEvent::submit_result(Ok(())));
+					match monitor.wait(self.tx().hash(), *self.tx().valid_until()).await {
 						Ok(block_hash) => {
 							log.push_event(ExecutionEvent::finalized_monitor(block_hash));
 							ExecutionResult::Done(self.tx().hash())
@@ -458,7 +460,7 @@ mod tests {
 
 	type EthTestTxTask = DefaultTxTask<EthTransaction>;
 
-	fn make_eth_test_transaction(
+	async fn make_eth_test_transaction(
 		api: &OnlineClient<EthRuntimeConfig>,
 		mortality: Option<u64>,
 		nonce: u64,
@@ -487,8 +489,13 @@ mod tests {
 			],
 		);
 
+		// TODO: implement retry logic if failures occur due to `create_partial` call.
 		let tx = EthTransaction::new(
-			api.tx().create_partial_offline(&tx_call, tx_params).unwrap().sign(&baltathar),
+			api.tx()
+				.create_partial(&tx_call, &baltathar.public_key().to_account_id(), tx_params)
+				.await
+				.unwrap()
+				.sign(&baltathar),
 			nonce as u128,
 			mortality,
 			AccountMetadata::KeyRing("baltathar".to_string()),
@@ -511,12 +518,12 @@ mod tests {
 		let api = subxt_api_connector::connect("ws://127.0.0.1:9933", false).await.unwrap();
 
 		let rpc = EthTransactionsSink::new().await;
-
-		let transactions = (0..3000)
-			.map(|i| EthTestTxTask::new_watched(make_eth_test_transaction(&api, None, i)))
-			.rev()
-			// .map(|t| Box::from(t) as Box<dyn Transaction<HashType = FakeHash>>)
-			.collect::<Vec<_>>();
+		let mut transactions = Vec::new();
+		for i in 0..3000 {
+			transactions
+				.push(EthTestTxTask::new_watched(make_eth_test_transaction(&api, None, i).await));
+		}
+		transactions.reverse();
 
 		let (_c, mut r) = Runner::<DefaultTxTask<EthTransaction>, EthTransactionsSink>::new(
 			10_000,
