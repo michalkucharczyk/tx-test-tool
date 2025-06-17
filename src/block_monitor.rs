@@ -54,16 +54,20 @@ impl<C: subxt::Config> TransactionMonitor<HashOf<C>> for BlockMonitor<C> {
 		if let Some(block_number) = until {
 			let res = self.client.blocks().subscribe_finalized().await;
 			let mut total_waiting = 0;
-			if let Ok(stream) = res {
+			if let Ok(mut stream) = res {
 				while let Some(Ok(block)) = stream.next().await {
 					// Stop waiting for the tx to finalize.
 					if block.number().into() >= block_number {
 						break;
 					}
 
+					let listener_with_timeout = tokio::time::timeout(
+						Duration::from_secs(6),
+						self.register_listener(tx_hash).await,
+					);
 					// Wait at maximum 6 seconds before giving up while checking whether the tx has
 					// been finalized.
-					match tokio::time::timeout(Duration::from_secs(6), listener).await {
+					match listener_with_timeout.await {
 						Ok(inner) =>
 							return inner.map_err(|err| {
 								Error::Other(format!(
@@ -79,8 +83,8 @@ impl<C: subxt::Config> TransactionMonitor<HashOf<C>> for BlockMonitor<C> {
 				}
 			}
 
-			error!(tx_hash, total_waiting, "waiting for tx to finalize timed out");
-			Err(Error::Other(format!("waiting for tx {} to finalize timed out", tx_hash)))
+			error!(?tx_hash, total_waiting, "waiting for tx to finalize timed out");
+			Err(Error::Other(format!("waiting for tx {:?} to finalize timed out", tx_hash)))
 		} else {
 			listener.await.map_err(|err| {
 				Error::Other(format!(

@@ -505,6 +505,7 @@ pub(crate) fn build_eth_tx_payload(
 	}
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn create_transaction<C: subxt::Config, KP, G>(
 	from_keypair: &KP,
 	nonce: u128,
@@ -694,11 +695,11 @@ where
 			sink,
 			&from_account_id,
 			&to_account_id,
-			&recipe,
+			recipe,
 			generate_payload,
 		)
 		.await
-		.unwrap()
+		.expect("failed to create mortal transaction")
 	} else {
 		let params = <SubstrateExtrinsicParamsBuilder<C>>::new()
 			.nonce(nonce as u64)
