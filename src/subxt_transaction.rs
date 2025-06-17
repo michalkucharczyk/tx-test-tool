@@ -685,30 +685,31 @@ where
 		"build_subxt_tx"
 	);
 
-	if let Ok(tx) = create_transaction(
-		&from_keypair,
-		nonce,
-		mortality,
-		account,
-		sink,
-		&from_account_id,
-		&to_account_id,
-		&recipe,
-		generate_payload,
-	)
-	.await
-	{
-		tx
+	if mortality.is_some() {
+		create_transaction(
+			&from_keypair,
+			nonce,
+			mortality,
+			account,
+			sink,
+			&from_account_id,
+			&to_account_id,
+			&recipe,
+			generate_payload,
+		)
+		.await
+		.unwrap()
 	} else {
 		let params = <SubstrateExtrinsicParamsBuilder<C>>::new()
 			.nonce(nonce as u64)
 			.tip(recipe.tip)
-			.build();
+			.build()
+			.into();
 		let tx_call = generate_payload(to_account_id, recipe);
 		let tx = SubxtTransaction::<C>::new(
 			sink.api()
 				.tx()
-				.create_partial_offline(&tx_call, params.into())
+				.create_partial_offline(&tx_call, params)
 				.unwrap()
 				.sign(&from_keypair),
 			nonce as u128,
@@ -718,9 +719,6 @@ where
 		debug!(target:LOG_TARGET,"built immortal tx hash: {:?}", tx.hash());
 		tx
 	}
-
-	// } else {
-	// 	}
 }
 
 #[cfg(test)]

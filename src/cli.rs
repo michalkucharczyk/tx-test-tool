@@ -31,7 +31,7 @@ pub enum CliCommand {
 		#[clap(long)]
 		block_monitor: bool,
 		/// Use mortal transactions. This represents the number of blocks the mortal tx is valid
-		/// for, starting with the current block at the time of submission.
+		/// for, starting with the current finalized block at the time of tx creation.
 		#[clap(long)]
 		mortal: Option<u64>,
 		/// Send transactions threshold, sends the batch when number of pedning extrinsics drops
