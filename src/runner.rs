@@ -145,9 +145,9 @@ impl<H: BlockHash, T: Transaction<HashType = H> + Send> TxTask for DefaultTxTask
 		log.push_event(ExecutionEvent::sent());
 
 		match rpc.submit(self.tx()).await {
-			Ok(_) =>
+			Ok(_) => {
+				log.push_event(ExecutionEvent::submit_result(Ok(())));
 				if let Some(monitor) = rpc.transaction_monitor() {
-					log.push_event(ExecutionEvent::submit_result(Ok(())));
 					match monitor.wait(self.tx().hash(), *self.tx().valid_until()).await {
 						Ok(block_hash) => {
 							log.push_event(ExecutionEvent::finalized_monitor(block_hash));
@@ -160,7 +160,8 @@ impl<H: BlockHash, T: Transaction<HashType = H> + Send> TxTask for DefaultTxTask
 					}
 				} else {
 					ExecutionResult::Done(self.tx().hash())
-				},
+				}
+			},
 			Err(e) => {
 				log.push_event(ExecutionEvent::submit_result(Err(e)));
 				ExecutionResult::Error(self.tx().hash())
