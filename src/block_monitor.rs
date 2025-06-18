@@ -2,7 +2,10 @@
 // This file is dual-licensed as Apache-2.0 or GPL-3.0.
 // see LICENSE for license details.
 
-use std::{collections::HashMap, pin::Pin, time::Duration};
+use std::{
+	collections::{HashMap, HashSet},
+	pin::Pin,
+};
 
 use crate::{error::Error, transaction::TransactionMonitor};
 use async_trait::async_trait;
@@ -14,14 +17,18 @@ use tokio::{
 	select,
 	sync::{mpsc, oneshot},
 };
-use tracing::{error, info, trace};
+use tracing::{info, trace};
 
 /// Monitors if transactions are part of finalized blocks and notifies external listeners when
 /// found.
 pub type BlockMonitorTask = Pin<Box<dyn Future<Output = ()> + Send>>;
 
-type TxFoundListener<H> = oneshot::Receiver<H>;
-type TxFoundListenerTrigger<H> = oneshot::Sender<H>;
+type TxFoundListener<H> = oneshot::Receiver<Option<H>>;
+type TxFoundListenerTrigger<H> = oneshot::Sender<Option<H>>;
+type TxSubmissionListener<C> =
+	mpsc::Receiver<(HashOf<C>, Option<u64>, TxFoundListenerTrigger<HashOf<C>>)>;
+type TxSubmissionSender<C> =
+	mpsc::Sender<(HashOf<C>, Option<u64>, TxFoundListenerTrigger<HashOf<C>>)>;
 type HashOf<C> = <C as subxt::Config>::Hash;
 
 #[derive(ValueEnum, Copy, Clone, Debug)]
@@ -42,57 +49,17 @@ impl BlockMonitorDisplayOptions {
 
 #[derive(Clone)]
 pub struct BlockMonitor<C: subxt::Config> {
-	listener_request_tx: mpsc::Sender<(HashOf<C>, TxFoundListenerTrigger<HashOf<C>>)>,
-	client: OnlineClient<C>,
+	listener_request_tx: TxSubmissionSender<C>,
 }
 
 #[async_trait]
 impl<C: subxt::Config> TransactionMonitor<HashOf<C>> for BlockMonitor<C> {
 	async fn wait(&self, tx_hash: HashOf<C>, until: Option<u64>) -> Result<HashOf<C>, Error> {
-		let listener = self.register_listener(tx_hash).await;
-		// Wait until block number is a finalized block
-		if let Some(block_number) = until {
-			let res = self.client.blocks().subscribe_finalized().await;
-			let mut total_waiting = 0;
-			if let Ok(mut stream) = res {
-				while let Some(Ok(block)) = stream.next().await {
-					// Stop waiting for the tx to finalize.
-					if block.number().into() >= block_number {
-						break;
-					}
-
-					let listener_with_timeout = tokio::time::timeout(
-						Duration::from_secs(6),
-						self.register_listener(tx_hash).await,
-					);
-					// Wait at maximum 6 seconds before giving up while checking whether the tx has
-					// been finalized.
-					match listener_with_timeout.await {
-						Ok(inner) =>
-							return inner.map_err(|err| {
-								Error::Other(format!(
-								"error while listening for block hash where tx was finalized: {}",
-								err
-							))
-							}),
-						Err(_) => {
-							total_waiting += 6;
-							continue;
-						},
-					}
-				}
-			}
-
-			error!(?tx_hash, total_waiting, "waiting for tx to finalize timed out");
-			Err(Error::Other(format!("waiting for tx {:?} to finalize timed out", tx_hash)))
-		} else {
-			listener.await.map_err(|err| {
-				Error::Other(format!(
-					"error while listening for notification for finalized tx: {}",
-					err
-				))
-			})
-		}
+		let listener = self.register_listener(tx_hash, until).await;
+		let hash = listener
+			.await
+			.expect("to get a notification about the transaction from block monitor. qed");
+		hash.ok_or(Error::Other("transaction lifetime ended".to_string()))
 	}
 }
 
@@ -104,9 +71,8 @@ impl<C: subxt::Config> BlockMonitor<C> {
 			.await
 			.expect("should connect to rpc client");
 		let (listener_request_tx, rx) = mpsc::channel(100);
-		let api_clone = api.clone();
-		tokio::spawn(async { Self::run(api_clone, rx, BlockMonitorDisplayOptions::All).await });
-		Self { listener_request_tx, client: api }
+		tokio::spawn(async { Self::run(api, rx, BlockMonitorDisplayOptions::All).await });
+		Self { listener_request_tx }
 	}
 
 	pub async fn new_with_options(uri: &str, options: BlockMonitorDisplayOptions) -> Self {
@@ -115,23 +81,27 @@ impl<C: subxt::Config> BlockMonitor<C> {
 			.await
 			.expect("should connect to rpc client");
 		let (listener_request_tx, rx) = mpsc::channel(100);
-		let api_clone = api.clone();
-		tokio::spawn(async move { Self::run(api_clone, rx, options).await });
-		Self { listener_request_tx, client: api }
+		tokio::spawn(async move { Self::run(api, rx, options).await });
+		Self { listener_request_tx }
 	}
 
 	/// Returns the receiving end of a channel where a notification is sent if the transaction with
 	/// the given hash is found in a finalized block.
-	pub async fn register_listener(&self, h: HashOf<C>) -> TxFoundListener<HashOf<C>> {
+	pub async fn register_listener(
+		&self,
+		h: HashOf<C>,
+		valid_until: Option<u64>,
+	) -> TxFoundListener<HashOf<C>> {
 		trace!(hash = ?h, "register_listener");
 		let (tx, external_listener) = oneshot::channel();
-		self.listener_request_tx.send((h, tx)).await.unwrap();
+		self.listener_request_tx.send((h, valid_until, tx)).await.unwrap();
 
 		external_listener
 	}
 
 	async fn handle_block(
 		callbacks: &mut HashMap<HashOf<C>, TxFoundListenerTrigger<HashOf<C>>>,
+		mortal_accounting: &mut HashMap<u64, HashSet<HashOf<C>>>,
 		block: Block<C, OnlineClient<C>>,
 		options: BlockMonitorDisplayOptions,
 		finalized: bool,
@@ -146,9 +116,19 @@ impl<C: subxt::Config> BlockMonitor<C> {
 				let hash = ext.hash();
 				if let Some(trigger) = callbacks.remove(&hash) {
 					trace!(?hash, "found transaction, notifying");
-					trigger.send(block_hash).unwrap();
+					trigger.send(Some(block_hash)).unwrap();
 				}
 			}
+
+			mortal_accounting.remove(&block_number).into_iter().for_each(|txs| {
+				for tx in txs {
+					if let Some(trigger) = callbacks.remove(&tx) {
+						info!(hash = ?tx, block_number, "mortal transaction lifetime ends");
+						trigger.send(None).unwrap();
+					}
+				}
+			});
+
 			if options.display_finalized() {
 				info!(block_number, extrinsics_count, "FINALIZED block");
 			}
@@ -160,26 +140,36 @@ impl<C: subxt::Config> BlockMonitor<C> {
 
 	async fn block_monitor_inner(
 		api: OnlineClient<C>,
-		mut listener_request_rx: mpsc::Receiver<(HashOf<C>, TxFoundListenerTrigger<HashOf<C>>)>,
+		mut listener_request_rx: TxSubmissionListener<C>,
 		options: BlockMonitorDisplayOptions,
 	) -> Result<(), Box<dyn std::error::Error>> {
 		let mut finalized_blocks_sub = api.blocks().subscribe_finalized().await?;
 		let mut best_blocks_sub = api.blocks().subscribe_best().await?;
 
 		let mut callbacks = HashMap::<HashOf<C>, TxFoundListenerTrigger<HashOf<C>>>::new();
+		let mut mortal_accounting = HashMap::<u64, HashSet<HashOf<C>>>::new();
 		loop {
 			select! {
 				Some(Ok(block)) = finalized_blocks_sub.next() => {
-					Self::handle_block(&mut callbacks, block, options, true).await?;
+					Self::handle_block(&mut callbacks, &mut mortal_accounting, block, options, true).await?;
 				}
 
 				Some(Ok(block)) = best_blocks_sub.next() => {
-					Self::handle_block(&mut callbacks, block, options, false).await?;
+					Self::handle_block(&mut callbacks, &mut mortal_accounting, block, options, false).await?;
 				}
 
-				Some((hash, tx)) = listener_request_rx.recv() => {
+				Some((hash, valid_until, tx)) = listener_request_rx.recv() => {
 					trace!("listener_request: {:?}", hash);
 					callbacks.insert(hash, tx);
+					if let Some(till) = valid_until {
+						if let Some(txs) = mortal_accounting.get_mut(&till) {
+							txs.insert(hash);
+						} else {
+							let mut txs = HashSet::new();
+							txs.insert(hash);
+							mortal_accounting.insert(till, txs);
+						}
+					}
 				}
 			}
 		}
@@ -187,7 +177,7 @@ impl<C: subxt::Config> BlockMonitor<C> {
 
 	async fn run(
 		api: OnlineClient<C>,
-		listener_requrest_rx: mpsc::Receiver<(HashOf<C>, TxFoundListenerTrigger<HashOf<C>>)>,
+		listener_requrest_rx: TxSubmissionListener<C>,
 		options: BlockMonitorDisplayOptions,
 	) {
 		let _ = Self::block_monitor_inner(api, listener_requrest_rx, options).await;
