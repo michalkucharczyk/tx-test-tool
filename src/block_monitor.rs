@@ -2,7 +2,7 @@
 // This file is dual-licensed as Apache-2.0 or GPL-3.0.
 // see LICENSE for license details.
 
-use std::{collections::HashMap, pin::Pin, sync::Arc, time::Duration};
+use std::{collections::HashMap, pin::Pin, time::Duration};
 
 use crate::{error::Error, transaction::TransactionMonitor};
 use async_trait::async_trait;
@@ -43,7 +43,7 @@ impl BlockMonitorDisplayOptions {
 #[derive(Clone)]
 pub struct BlockMonitor<C: subxt::Config> {
 	listener_request_tx: mpsc::Sender<(HashOf<C>, TxFoundListenerTrigger<HashOf<C>>)>,
-	client: Arc<OnlineClient<C>>,
+	client: OnlineClient<C>,
 }
 
 #[async_trait]
@@ -100,11 +100,9 @@ impl<C: subxt::Config> BlockMonitor<C> {
 	/// Instantiates a [`BlockMonitor`].
 	pub async fn new(uri: &str) -> Self {
 		trace!(uri, "BlockNumber::new");
-		let api = Arc::new(
-			OnlineClient::<C>::from_insecure_url(uri)
-				.await
-				.expect("should connect to rpc client"),
-		);
+		let api = OnlineClient::<C>::from_insecure_url(uri)
+			.await
+			.expect("should connect to rpc client");
 		let (listener_request_tx, rx) = mpsc::channel(100);
 		let api_clone = api.clone();
 		tokio::spawn(async { Self::run(api_clone, rx, BlockMonitorDisplayOptions::All).await });
@@ -113,11 +111,9 @@ impl<C: subxt::Config> BlockMonitor<C> {
 
 	pub async fn new_with_options(uri: &str, options: BlockMonitorDisplayOptions) -> Self {
 		trace!(uri, "BlockNumber::new");
-		let api = Arc::new(
-			OnlineClient::<C>::from_insecure_url(uri)
-				.await
-				.expect("should connect to rpc client"),
-		);
+		let api = OnlineClient::<C>::from_insecure_url(uri)
+			.await
+			.expect("should connect to rpc client");
 		let (listener_request_tx, rx) = mpsc::channel(100);
 		let api_clone = api.clone();
 		tokio::spawn(async move { Self::run(api_clone, rx, options).await });
@@ -163,7 +159,7 @@ impl<C: subxt::Config> BlockMonitor<C> {
 	}
 
 	async fn block_monitor_inner(
-		api: Arc<OnlineClient<C>>,
+		api: OnlineClient<C>,
 		mut listener_request_rx: mpsc::Receiver<(HashOf<C>, TxFoundListenerTrigger<HashOf<C>>)>,
 		options: BlockMonitorDisplayOptions,
 	) -> Result<(), Box<dyn std::error::Error>> {
@@ -190,7 +186,7 @@ impl<C: subxt::Config> BlockMonitor<C> {
 	}
 
 	async fn run(
-		api: Arc<OnlineClient<C>>,
+		api: OnlineClient<C>,
 		listener_requrest_rx: mpsc::Receiver<(HashOf<C>, TxFoundListenerTrigger<HashOf<C>>)>,
 		options: BlockMonitorDisplayOptions,
 	) {
