@@ -506,7 +506,7 @@ pub(crate) fn build_eth_tx_payload(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn create_transaction<C: subxt::Config, KP, G>(
+async fn create_online_transaction<C: subxt::Config, KP, G>(
 	from_keypair: &KP,
 	nonce: u128,
 	mortality: &Option<u64>,
@@ -551,28 +551,39 @@ where
 		params.build()
 	}
 
+	async fn current_finalized_block_number<CC: subxt::Config, KEYP>(
+		sink: &SubxtTransactionsSink<CC, KEYP>,
+	) -> u64
+	where
+		KEYP: Signer<CC> + Clone + Send + Sync + 'static,
+		AccountIdOf<CC>: Send + Sync + AsRef<[u8]>,
+	{
+		let block_ref = sink
+			.api()
+			.backend()
+			.latest_finalized_block_ref()
+			.await
+			.expect("to get the last finalized block ref. qed");
+		let block = sink
+			.api()
+			.blocks()
+			.at(block_ref)
+			.await
+			.expect("to get the corresponding block header. qed");
+		block.number().into()
+	}
+
 	let params = tx_params(mortality, nonce as u64, recipe);
 	let tx_call = generate_payload(to_account_id.clone(), recipe);
 	match sink.api().tx().create_partial(&tx_call, from_account_id, params.into()).await {
 		Ok(mut tx) => {
-			let block_ref = sink
-				.api()
-				.backend()
-				.latest_finalized_block_ref()
-				.await
-				.expect("to get the last finalized block ref. qed");
-			let block = sink
-				.api()
-				.blocks()
-				.at(block_ref)
-				.await
-				.expect("to get the corresponding block header. qed");
 			let submittable_tx = tx.sign(from_keypair);
 			let hash = submittable_tx.hash();
+			let block_number = current_finalized_block_number(sink).await;
 			let tx = SubxtTransaction::<C>::new(
 				submittable_tx,
 				nonce,
-				mortality.map(|mortal| block.number().into() + mortal),
+				mortality.map(|mortal| block_number + mortal),
 				sink.get_to_account_metadata(account).expect("account metadata exists"),
 			);
 			debug!(target:LOG_TARGET,"built mortal tx hash: {:?}", hash);
@@ -590,24 +601,13 @@ where
 						.await
 					{
 						Ok(mut tx) => {
-							let block_ref = sink
-								.api()
-								.backend()
-								.latest_finalized_block_ref()
-								.await
-								.expect("to get the last finalized block ref. qed");
-							let block = sink
-								.api()
-								.blocks()
-								.at(block_ref)
-								.await
-								.expect("to get the corresponding block header. qed");
+							let block_number = current_finalized_block_number(sink).await;
 							let submittable_tx = tx.sign(from_keypair);
 							let hash = submittable_tx.hash();
 							let subxt_tx = SubxtTransaction::<C>::new(
 								submittable_tx,
 								nonce,
-								mortality.map(|mortal| block.number().into() + mortal),
+								mortality.map(|mortal| block_number + mortal),
 								sink.get_to_account_metadata(account)
 									.expect("account metadata exists"),
 							);
@@ -687,7 +687,7 @@ where
 	);
 
 	if mortality.is_some() {
-		create_transaction(
+		create_online_transaction(
 			&from_keypair,
 			nonce,
 			mortality,
