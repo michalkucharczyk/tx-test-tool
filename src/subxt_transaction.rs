@@ -558,7 +558,7 @@ where
 		nonce: u128,
 		mortality: &Option<u64>,
 		account: &str,
-	) -> SubxtTransaction<CC>
+	) -> Result<SubxtTransaction<CC>, Error>
 	where
 		KEYP: Signer<CC> + Clone + Send + Sync + 'static,
 		AccountIdOf<CC>: Send + Sync + AsRef<[u8]>,
@@ -579,59 +579,26 @@ where
 		let submittable_tx = partial_tx.sign(from_keypair);
 		let hash = submittable_tx.hash();
 		debug!(target:LOG_TARGET,"built mortal tx hash: {:?}", hash);
-		SubxtTransaction::<CC>::new(
+		Ok(SubxtTransaction::<CC>::new(
 			submittable_tx,
 			nonce,
 			mortality.map(|mortal| block_number + mortal),
 			sink.get_to_account_metadata(account).expect("account metadata exists"),
-		)
+		))
 	}
 
-	let params = tx_params(mortality, nonce as u64, recipe);
 	let tx_call = generate_payload(to_account_id.clone(), recipe);
-	match sink.api().tx().create_partial(&tx_call, from_account_id, params.into()).await {
-		Ok(tx) => Ok(subxt_transaction(sink, tx, from_keypair, nonce, mortality, account).await),
-		Err(err) => match err {
-			subxt::Error::Block(subxt::error::BlockError::NotFound(_)) => {
-				let tx_call = generate_payload(to_account_id.clone(), recipe);
-				for _ in 0..DEFAULT_RETRIES_FOR_PARTIAL_TX_CREATION {
-					let params = tx_params(mortality, nonce as u64, recipe);
-					match sink
-						.api()
-						.tx()
-						.create_partial(&tx_call, from_account_id, params.into())
-						.await
-					{
-						Ok(tx) =>
-							return Ok(subxt_transaction(
-								sink,
-								tx,
-								from_keypair,
-								nonce,
-								mortality,
-								account,
-							)
-							.await),
-						Err(_) => continue,
-					}
-				}
-				Err(Error::Other(format!("Creating transaction after {DEFAULT_RETRIES_FOR_PARTIAL_TX_CREATION} iterations failed. Check logs for more info!")))
-			},
-			err => {
-				error!(
-					target: LOG_TARGET,
-					account,
-					nonce,
-					?mortality,
-					from_account=hex::encode(from_account_id.clone()),
-					to_account=hex::encode(to_account_id.clone()),
-					%err,
-					"build_subxt_tx: create partial tx failure"
-				);
-				Err(Error::Other(format!("can not create transaction due to: {}", err)))
-			},
-		},
+	for _ in 0..DEFAULT_RETRIES_FOR_PARTIAL_TX_CREATION {
+		let params = tx_params(mortality, nonce as u64, recipe);
+		match sink.api().tx().create_partial(&tx_call, from_account_id, params.into()).await {
+			Ok(tx) =>
+				return subxt_transaction(sink, tx, from_keypair, nonce, mortality, account).await,
+			Err(_) => continue,
+		}
 	}
+
+	error!(target: LOG_TARGET, "Attempting transaction creation with the online client, to factor in the provided mortality, failed.");
+	Err(Error::Other("failed to create transaction with online client".to_string()))
 }
 
 /// Builds a transaction with subxt.
