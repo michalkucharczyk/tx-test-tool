@@ -33,7 +33,7 @@ type TxFoundListenerTrigger<H> = oneshot::Sender<Result<H, Error>>;
 /// It is based on a tuple containing (transaction hash, maybe_mortality, channel sending end).
 type ListenerInfo<C> = (HashOf<C>, Option<u64>, TxFoundListenerTrigger<HashOf<C>>);
 /// Receiving end of a channel used by block monitor to register unwatched transactions
-/// finalization.
+/// finalization listener.
 type TxSubmissionListener<C> = mpsc::Receiver<ListenerInfo<C>>;
 /// Sending end of a channel used by the runner to submit to the block monitor a listener for
 /// unwatched transactions finalization.
