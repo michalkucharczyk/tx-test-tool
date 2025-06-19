@@ -3,6 +3,7 @@
 // see LICENSE for license details.
 
 use crate::{
+	error::Error,
 	execution_log::{
 		journal::Journal, make_stats, Counters, ExecutionEvent, ExecutionLog, Logs,
 		TransactionExecutionLog, STAT_TARGET,
@@ -154,7 +155,12 @@ impl<H: BlockHash, T: Transaction<HashType = H> + Send> TxTask for DefaultTxTask
 							ExecutionResult::Done(self.tx().hash())
 						},
 						Err(err) => {
-							log.push_event(ExecutionEvent::submit_result(Err(err)));
+							match err {
+								Error::MortalLifetimeSurpassed(block_number) => log.push_event(
+									ExecutionEvent::mortal_dropped_monitor(block_number),
+								),
+								_ => log.push_event(ExecutionEvent::submit_result(Err(err))),
+							};
 							ExecutionResult::Error(self.tx().hash())
 						},
 					}

@@ -23,8 +23,8 @@ use tracing::{info, trace};
 /// found.
 pub type BlockMonitorTask = Pin<Box<dyn Future<Output = ()> + Send>>;
 
-type TxFoundListener<H> = oneshot::Receiver<Option<H>>;
-type TxFoundListenerTrigger<H> = oneshot::Sender<Option<H>>;
+type TxFoundListener<H> = oneshot::Receiver<Result<H, Error>>;
+type TxFoundListenerTrigger<H> = oneshot::Sender<Result<H, Error>>;
 type TxSubmissionListener<C> =
 	mpsc::Receiver<(HashOf<C>, Option<u64>, TxFoundListenerTrigger<HashOf<C>>)>;
 type TxSubmissionSender<C> =
@@ -56,10 +56,9 @@ pub struct BlockMonitor<C: subxt::Config> {
 impl<C: subxt::Config> TransactionMonitor<HashOf<C>> for BlockMonitor<C> {
 	async fn wait(&self, tx_hash: HashOf<C>, until: Option<u64>) -> Result<HashOf<C>, Error> {
 		let listener = self.register_listener(tx_hash, until).await;
-		let hash = listener
-			.await
-			.expect("to get a notification about the transaction from block monitor. qed");
-		hash.ok_or(Error::Other("transaction lifetime ended".to_string()))
+		listener.await.map_err(|err| {
+			Error::Other(format!("failed while waiting for tx finalization: {err}"))
+		})?
 	}
 }
 
@@ -116,7 +115,7 @@ impl<C: subxt::Config> BlockMonitor<C> {
 				let hash = ext.hash();
 				if let Some(trigger) = callbacks.remove(&hash) {
 					trace!(?hash, "found transaction, notifying");
-					trigger.send(Some(block_hash)).unwrap();
+					trigger.send(Ok(block_hash)).unwrap();
 				}
 			}
 
@@ -124,7 +123,7 @@ impl<C: subxt::Config> BlockMonitor<C> {
 				for tx in txs {
 					if let Some(trigger) = callbacks.remove(&tx) {
 						info!(hash = ?tx, block_number, "mortal transaction lifetime ends");
-						trigger.send(None).unwrap();
+						trigger.send(Err(Error::MortalLifetimeSurpassed(block_number))).unwrap();
 					}
 				}
 			});

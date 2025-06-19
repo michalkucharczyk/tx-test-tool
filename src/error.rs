@@ -13,4 +13,7 @@ pub enum Error {
 	/// Other error.
 	#[error("Other error: {0}")]
 	Other(String),
+	/// Mortal transaction lifetime surpassed
+	#[error("Mortal transaction lifetime surpassed")]
+	MortalLifetimeSurpassed(u64),
 }
