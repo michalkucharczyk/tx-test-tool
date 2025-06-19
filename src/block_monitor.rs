@@ -23,12 +23,21 @@ use tracing::{info, trace};
 /// found.
 pub type BlockMonitorTask = Pin<Box<dyn Future<Output = ()> + Send>>;
 
+/// Receiving end of a channel used by the runner to get notified with the block hash of the
+/// finalized block that contains unwatched transactions.
 type TxFoundListener<H> = oneshot::Receiver<Result<H, Error>>;
+/// Sending end of a channel used by the block monitor to send block hash notifications to a runner
+/// waiting for unwatched transaction finalization.
 type TxFoundListenerTrigger<H> = oneshot::Sender<Result<H, Error>>;
-type TxSubmissionListener<C> =
-	mpsc::Receiver<(HashOf<C>, Option<u64>, TxFoundListenerTrigger<HashOf<C>>)>;
-type TxSubmissionSender<C> =
-	mpsc::Sender<(HashOf<C>, Option<u64>, TxFoundListenerTrigger<HashOf<C>>)>;
+/// Information used by block monitor to create a listener for unwatched transactions finalization.
+/// It is based on a tuple containing (transaction hash, maybe_mortality, channel sending end).
+type ListenerInfo<C> = (HashOf<C>, Option<u64>, TxFoundListenerTrigger<HashOf<C>>);
+/// Receiving end of a channel used by block monitor to register unwatched transactions
+/// finalization.
+type TxSubmissionListener<C> = mpsc::Receiver<ListenerInfo<C>>;
+/// Sending end of a channel used by the runner to submit to the block monitor a listener for
+/// unwatched transactions finalization.
+type TxSubmissionSender<C> = mpsc::Sender<ListenerInfo<C>>;
 type HashOf<C> = <C as subxt::Config>::Hash;
 
 #[derive(ValueEnum, Copy, Clone, Debug)]
