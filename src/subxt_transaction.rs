@@ -28,7 +28,7 @@ use subxt::{
 	},
 	dynamic::{At, Value},
 	ext::scale_value::value,
-	tx::{DynamicPayload, Signer, SubmittableTransaction},
+	tx::{DynamicPayload, PartialTransaction, Signer, SubmittableTransaction},
 	OnlineClient, PolkadotConfig,
 };
 use subxt_core::{config::SubstrateExtrinsicParamsBuilder, utils::AccountId20};
@@ -551,9 +551,14 @@ where
 		params.build()
 	}
 
-	async fn current_finalized_block_number<CC: subxt::Config, KEYP>(
+	async fn subxt_transaction<CC: subxt::Config, KEYP>(
 		sink: &SubxtTransactionsSink<CC, KEYP>,
-	) -> u64
+		mut partial_tx: PartialTransaction<CC, OnlineClient<CC>>,
+		from_keypair: &KEYP,
+		nonce: u128,
+		mortality: &Option<u64>,
+		account: &str,
+	) -> SubxtTransaction<CC>
 	where
 		KEYP: Signer<CC> + Clone + Send + Sync + 'static,
 		AccountIdOf<CC>: Send + Sync + AsRef<[u8]>,
@@ -570,25 +575,22 @@ where
 			.at(block_ref)
 			.await
 			.expect("to get the corresponding block header. qed");
-		block.number().into()
+		let block_number = block.number().into();
+		let submittable_tx = partial_tx.sign(from_keypair);
+		let hash = submittable_tx.hash();
+		debug!(target:LOG_TARGET,"built mortal tx hash: {:?}", hash);
+		SubxtTransaction::<CC>::new(
+			submittable_tx,
+			nonce,
+			mortality.map(|mortal| block_number + mortal),
+			sink.get_to_account_metadata(account).expect("account metadata exists"),
+		)
 	}
 
 	let params = tx_params(mortality, nonce as u64, recipe);
 	let tx_call = generate_payload(to_account_id.clone(), recipe);
 	match sink.api().tx().create_partial(&tx_call, from_account_id, params.into()).await {
-		Ok(mut tx) => {
-			let submittable_tx = tx.sign(from_keypair);
-			let hash = submittable_tx.hash();
-			let block_number = current_finalized_block_number(sink).await;
-			let tx = SubxtTransaction::<C>::new(
-				submittable_tx,
-				nonce,
-				mortality.map(|mortal| block_number + mortal),
-				sink.get_to_account_metadata(account).expect("account metadata exists"),
-			);
-			debug!(target:LOG_TARGET,"built mortal tx hash: {:?}", hash);
-			Ok(tx)
-		},
+		Ok(tx) => Ok(subxt_transaction(sink, tx, from_keypair, nonce, mortality, account).await),
 		Err(err) => match err {
 			subxt::Error::Block(subxt::error::BlockError::NotFound(_)) => {
 				let tx_call = generate_payload(to_account_id.clone(), recipe);
@@ -600,20 +602,16 @@ where
 						.create_partial(&tx_call, from_account_id, params.into())
 						.await
 					{
-						Ok(mut tx) => {
-							let block_number = current_finalized_block_number(sink).await;
-							let submittable_tx = tx.sign(from_keypair);
-							let hash = submittable_tx.hash();
-							let subxt_tx = SubxtTransaction::<C>::new(
-								submittable_tx,
+						Ok(tx) =>
+							return Ok(subxt_transaction(
+								sink,
+								tx,
+								from_keypair,
 								nonce,
-								mortality.map(|mortal| block_number + mortal),
-								sink.get_to_account_metadata(account)
-									.expect("account metadata exists"),
-							);
-							debug!(target:LOG_TARGET,"built mortal tx hash: {:?}", hash);
-							return Ok(subxt_tx)
-						},
+								mortality,
+								account,
+							)
+							.await),
 						Err(_) => continue,
 					}
 				}
