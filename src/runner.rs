@@ -23,7 +23,7 @@ use tokio::{
 	select,
 	sync::mpsc::{channel, Receiver, Sender},
 };
-use tracing::{debug, info, instrument, trace, warn, Span};
+use tracing::{debug, error, info, instrument, trace, warn, Span};
 
 const LOG_TARGET: &str = "runner";
 
@@ -159,7 +159,10 @@ impl<H: BlockHash, T: Transaction<HashType = H> + Send> TxTask for DefaultTxTask
 								Error::MortalLifetimeSurpassed(block_number) => log.push_event(
 									ExecutionEvent::mortal_dropped_monitor(block_number),
 								),
-								_ => log.push_event(ExecutionEvent::submit_result(Err(err))),
+								_ => {
+									error!(target: LOG_TARGET, ?err, "error while waiting for transaction");
+									log.push_event(ExecutionEvent::submit_result(Err(err)))
+								},
 							};
 							ExecutionResult::Error(self.tx().hash())
 						},
