@@ -551,6 +551,11 @@ where
 		params.build()
 	}
 
+	// Creates a subxt transaction.
+	//
+	// The mortality of the transaction involves setting up a block until the transaction is valid,
+	// which needs fetching the last finalized block number on chain similarly to subxt:
+	// https://github.com/paritytech/subxt/blob/77b6abccbacf194f3889610024e2f4024e8c2822/subxt/src/tx/tx_client.rs#L600
 	async fn subxt_transaction<CC: subxt::Config, KEYP>(
 		sink: &SubxtTransactionsSink<CC, KEYP>,
 		mut partial_tx: PartialTransaction<CC, OnlineClient<CC>>,
@@ -563,26 +568,31 @@ where
 		KEYP: Signer<CC> + Clone + Send + Sync + 'static,
 		AccountIdOf<CC>: Send + Sync + AsRef<[u8]>,
 	{
-		let block_ref = sink
-			.api()
-			.backend()
-			.latest_finalized_block_ref()
-			.await
-			.expect("to get the last finalized block ref. qed");
-		let block = sink
-			.api()
-			.blocks()
-			.at(block_ref)
-			.await
-			.expect("to get the corresponding block header. qed");
-		let block_number = block.number().into();
+		let block_number = if mortality.is_some() {
+			let block_ref = sink
+				.api()
+				.backend()
+				.latest_finalized_block_ref()
+				.await
+				.expect("to get the last finalized block ref. qed");
+			let block = sink
+				.api()
+				.blocks()
+				.at(block_ref)
+				.await
+				.expect("to get the corresponding block header. qed");
+			Some(block.number().into())
+		} else {
+			None
+		};
+
 		let submittable_tx = partial_tx.sign(from_keypair);
 		let hash = submittable_tx.hash();
 		debug!(target:LOG_TARGET,"built mortal tx hash: {:?}", hash);
 		Ok(SubxtTransaction::<CC>::new(
 			submittable_tx,
 			nonce,
-			mortality.map(|mortal| block_number + mortal),
+			mortality.and_then(|mortal| block_number.map(|number| number + mortal)),
 			sink.get_to_account_metadata(account).expect("account metadata exists"),
 		))
 	}
