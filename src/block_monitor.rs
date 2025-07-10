@@ -170,10 +170,10 @@ impl<C: subxt::Config> BlockMonitor<C> {
 					trace!("listener_request: {:?}", hash);
 					callbacks.insert(hash, tx);
 					if let Some(till) = valid_until {
-                        mortal_accounting
-                            .entry(till)
-                            .or_insert_with(HashSet::new)
-                            .insert(hash);
+						mortal_accounting
+							.entry(till)
+							.or_default()
+							.insert(hash);
 					}
 				}
 			}
