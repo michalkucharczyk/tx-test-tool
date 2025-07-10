@@ -599,6 +599,12 @@ pub fn make_stats<E: ExecutionLog>(logs: impl IntoIterator<Item = Arc<E>>, show_
 		E::time_to_finalized_monitor,
 		show_graphs,
 	);
+	single_stat(
+		"Time to dropped (monitor)".into(),
+		logs.iter(),
+		E::time_to_mortal_dropped_monitor,
+		show_graphs,
+	);
 
 	failure_reason_stats("Dropped".into(), logs.iter(), E::get_dropped_reason);
 	failure_reason_stats("Error".into(), logs.iter(), E::get_error_reason);
