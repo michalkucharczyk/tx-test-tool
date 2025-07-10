@@ -77,6 +77,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 				scenario_builder = populate_scenario_builder!(scenario_builder, scenario);
 
+				if let Some(mortality) = mortal {
+					scenario_builder = scenario_builder.with_mortality(*mortality);
+				}
+
 				if let Some(inner) = remark {
 					scenario_builder = scenario_builder.with_remark_recipe(*inner);
 				}
@@ -96,6 +100,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 					.with_tip(*tip);
 
 				scenario_builder = populate_scenario_builder!(scenario_builder, scenario);
+
+				if let Some(mortality) = mortal {
+					scenario_builder = scenario_builder.with_mortality(*mortality);
+				}
 
 				if let Some(inner) = remark {
 					scenario_builder = scenario_builder.with_remark_recipe(*inner);

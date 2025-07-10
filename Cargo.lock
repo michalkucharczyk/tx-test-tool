@@ -898,9 +898,9 @@ dependencies = [
 
 [[package]]
 name = "derive_more"
-version = "0.99.19"
+version = "0.99.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3da29a38df43d6f156149c9b43ded5e018ddff2a855cf2cfd62e8cd7d079c69f"
+checksum = "6edb4b64a43d977b8e99788fe3a04d483834fba1215a7e02caa415b626497f7f"
 dependencies = [
  "convert_case",
  "proc-macro2",
@@ -1147,11 +1147,11 @@ dependencies = [
 
 [[package]]
 name = "frame-decode"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50c554ce2394e2c04426a070b4cb133c72f6f14c86b665f4e13094addd8e8958"
+checksum = "a7cb8796f93fa038f979a014234d632e9688a120e745f936e2635123c77537f7"
 dependencies = [
- "frame-metadata",
+ "frame-metadata 21.0.0",
  "parity-scale-codec",
  "scale-decode",
  "scale-info",
@@ -1169,6 +1169,17 @@ dependencies = [
  "parity-scale-codec",
  "scale-info",
  "serde",
+]
+
+[[package]]
+name = "frame-metadata"
+version = "21.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20dfd1d7eae1d94e32e869e2fb272d81f52dd8db57820a373adb83ea24d7d862"
+dependencies = [
+ "cfg-if",
+ "parity-scale-codec",
+ "scale-info",
 ]
 
 [[package]]
@@ -2690,7 +2701,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5174a470eeb535a721ae9fdd6e291c2411a906b96592182d05217591d5c5cf7b"
 dependencies = [
  "byteorder",
- "derive_more 0.99.19",
+ "derive_more 0.99.20",
 ]
 
 [[package]]
@@ -2822,9 +2833,9 @@ dependencies = [
 
 [[package]]
 name = "scale-typegen"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6aebea322734465f39e4ad8100e1f9708c6c6c325d92b8780015d30c44fae791"
+checksum = "05c61b6b706a3eaad63b506ab50a1d2319f817ae01cf753adcc3f055f9f0fcd6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3161,7 +3172,7 @@ dependencies = [
  "bs58",
  "chacha20",
  "crossbeam-queue",
- "derive_more 0.99.19",
+ "derive_more 0.99.20",
  "ed25519-zebra",
  "either",
  "event-listener",
@@ -3211,7 +3222,7 @@ dependencies = [
  "base64 0.22.1",
  "blake2-rfc",
  "bs58",
- "derive_more 0.99.19",
+ "derive_more 0.99.20",
  "either",
  "event-listener",
  "fnv",
@@ -3311,7 +3322,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "substrate-txtesttool"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "average",
@@ -3356,7 +3367,7 @@ dependencies = [
  "async-trait",
  "derive-where",
  "either",
- "frame-metadata",
+ "frame-metadata 20.0.0",
  "futures",
  "hex",
  "jsonrpsee",
@@ -3411,7 +3422,7 @@ dependencies = [
  "blake2",
  "derive-where",
  "frame-decode",
- "frame-metadata",
+ "frame-metadata 20.0.0",
  "hashbrown 0.14.5",
  "hex",
  "impl-serde",
@@ -3471,7 +3482,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fff4591673600c4388e21305788282414d26c791b4dee21b7cb0b19c10076f98"
 dependencies = [
  "frame-decode",
- "frame-metadata",
+ "frame-metadata 20.0.0",
  "hashbrown 0.14.5",
  "parity-scale-codec",
  "scale-info",
@@ -3486,7 +3497,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ba7494d250d65dc3439365ac5e8e0fbb9c3992e6e84b7aa01d69e082249b8b8"
 dependencies = [
  "derive-where",
- "frame-metadata",
+ "frame-metadata 20.0.0",
  "futures",
  "hex",
  "impl-serde",
@@ -3700,9 +3711,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.43.0"
+version = "1.45.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d61fa4ffa3de412bfea335c6ecff681de2b609ba3c77ef3e00e521813a9ed9e"
+checksum = "75ef51a33ef1da925cea3e4eb122833cb377c61439ca401b770f54902b806779"
 dependencies = [
  "backtrace",
  "libc",

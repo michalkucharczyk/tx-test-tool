@@ -30,6 +30,7 @@ use crate::{
 pub(crate) struct TransactionBuildParams {
 	pub account: String,
 	pub nonce: Option<u128>,
+	pub mortality: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -161,6 +162,7 @@ impl ScenarioExecutor {
 		.expect("Error setting Ctrl-C handler");
 	}
 }
+
 /// Building logic for the execution of a scenario.
 pub struct ScenarioBuilder {
 	account_id: Option<String>,
@@ -169,6 +171,7 @@ pub struct ScenarioBuilder {
 	nonce_from: Option<u128>,
 	txs_count: u32,
 	tx_recipe: Option<TransactionRecipe>,
+	mortality: Option<u64>,
 	does_block_monitoring: bool,
 	watched_txs: bool,
 	send_threshold: Option<usize>,
@@ -204,6 +207,7 @@ impl ScenarioBuilder {
 			txs_count: 1,
 			tx_recipe: Some(TransactionRecipe::transfer(0)),
 			does_block_monitoring: false,
+			mortality: None,
 			watched_txs: false,
 			send_threshold: Some(1000),
 			rpc_uri: None,
@@ -263,14 +267,19 @@ impl ScenarioBuilder {
 		self
 	}
 
-	/// The builder is already initialised with a transfer transaction recipe with a tip of 0
-	/// and this API lets builders set it specifically with a certain tip amount.
+	/// Sets transaction recipe to a regular balances transfer.
+	///
+	/// The builder is already initialised with a transfer transaction recipe with a tip of 0.
+	/// If a tip is set, the builder will update the tip of the transaction recipe accordingly.
 	pub fn with_transfer_recipe(mut self) -> Self {
 		self.tx_recipe = Some(TransactionRecipe::transfer(self.tip));
 		self
 	}
 
-	/// Set a remark transaction recipe with a certain tip.
+	/// Set a remark transaction recipe.
+	///
+	/// If a tip is set, the builder will update the tip of the transaction recipe
+	/// accordingly.
 	pub fn with_remark_recipe(mut self, remark: u32) -> Self {
 		self.tx_recipe = Some(TransactionRecipe::remark(remark, self.tip));
 		self
@@ -289,6 +298,17 @@ impl ScenarioBuilder {
 	/// transactions.
 	pub fn with_block_monitoring(mut self, does_block_monitoring: bool) -> Self {
 		self.does_block_monitoring = does_block_monitoring;
+		self
+	}
+
+	/// Sets for how many blocks a transaction is considered valid.
+	///
+	/// Note: using this setter can increase the transaction creation times which can impact heavy
+	/// load tests that create millions of transactions. This method instructs a scenario to use
+	/// an online client for txs creation, since creating mortal txs requires knowledge about the
+	/// last finalized block on chain.
+	pub fn with_mortality(mut self, mortality: u64) -> Self {
+		self.mortality = Some(mortality);
 		self
 	}
 
@@ -377,8 +397,11 @@ impl ScenarioBuilder {
 			for account in start_id..=last_id {
 				let mut nonce = self.nonce_from;
 				for _ in 0..self.txs_count {
-					tx_build_params
-						.push(TransactionBuildParams { account: account.to_string(), nonce });
+					tx_build_params.push(TransactionBuildParams {
+						account: account.to_string(),
+						nonce,
+						mortality: self.mortality,
+					});
 					nonce = nonce.map(|n| n + 1);
 				}
 			}
@@ -389,7 +412,11 @@ impl ScenarioBuilder {
 				.clone()
 				.expect("to have configured an account id for transactions generation");
 			for _ in 0..self.txs_count {
-				tx_build_params.push(TransactionBuildParams { account: account.clone(), nonce });
+				tx_build_params.push(TransactionBuildParams {
+					account: account.clone(),
+					nonce,
+					mortality: self.mortality,
+				});
 				nonce = nonce.map(|n| n + 1);
 			}
 		}
@@ -423,6 +450,7 @@ impl ScenarioBuilder {
 							.build_transaction(
 								&build_params.account,
 								&build_params.nonce,
+								&build_params.mortality,
 								&sink,
 								watched_txs,
 								&recipe,

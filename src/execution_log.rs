@@ -37,6 +37,7 @@ pub enum ExecutionEvent<H> {
 	SubmitAndWatchResult(SystemTime, Result<(), String>),
 	TxPoolEvent(SystemTime, TransactionStatus<H>),
 	FinalizedMonitor(SystemTime, H),
+	MortalDroppedMonitor(SystemTime, u64),
 }
 
 impl<H: BlockHash + DeserializeOwned + std::fmt::Debug> ExecutionEvent<H> {}
@@ -57,6 +58,9 @@ impl<H: BlockHash> ExecutionEvent<H> {
 	pub fn finalized_monitor(block_hash: H) -> Self {
 		Self::FinalizedMonitor(SystemTime::now(), block_hash)
 	}
+	pub fn mortal_dropped_monitor(block_number: u64) -> Self {
+		Self::MortalDroppedMonitor(SystemTime::now(), block_number)
+	}
 }
 
 impl<H: BlockHash> From<TransactionStatus<H>> for ExecutionEvent<H> {
@@ -74,6 +78,7 @@ pub struct Counters {
 	submit_and_watch_success: AtomicUsize,
 	submit_and_watch_error: AtomicUsize,
 	finalized_monitor: AtomicUsize,
+	mortal_dropped_monitor: AtomicUsize,
 
 	ts_validated: AtomicUsize,
 	ts_broadcasted: AtomicUsize,
@@ -139,6 +144,7 @@ impl Counters {
 				TransactionStatus::NoLongerInBestBlock => {},
 			},
 			ExecutionEvent::Resubmitted(_) => {},
+			ExecutionEvent::MortalDroppedMonitor(_, _) => Self::inc(&self.mortal_dropped_monitor),
 		}
 	}
 }
@@ -199,6 +205,13 @@ pub trait ExecutionLog: Sync + Send {
 
 	/// Returns the duration to finalization as monitored by an external observer.
 	fn time_to_finalized_monitor(&self) -> Option<Duration>;
+
+	/// Returns the duration to mortal dropped as monitored by an external observer.
+	///
+	/// The correct moment a transaction is blocked is not known by simply looking at the finalize
+	/// blocks, but when the tx is dropped, this represents the time it took to declare it as
+	/// dropped/invalid.
+	fn time_to_mortal_dropped_monitor(&self) -> Option<Duration>;
 
 	/// Retrieves reasons for invalidation of the transaction.
 	fn get_invalid_reason(&self) -> Vec<String>;
@@ -349,6 +362,14 @@ impl<H: BlockHash + 'static> ExecutionLog for TransactionExecutionLog<H> {
 	fn time_to_finalized_monitor(&self) -> Option<Duration> {
 		let fmts = self.events.read().iter().find_map(|e| match e {
 			ExecutionEvent::FinalizedMonitor(i, _) => Some(*i),
+			_ => None,
+		});
+		Self::duration_since_timestamp(self.get_sent_time_stamp(), fmts)
+	}
+
+	fn time_to_mortal_dropped_monitor(&self) -> Option<Duration> {
+		let fmts = self.events.read().iter().find_map(|e| match e {
+			ExecutionEvent::MortalDroppedMonitor(i, _) => Some(*i),
 			_ => None,
 		});
 		Self::duration_since_timestamp(self.get_sent_time_stamp(), fmts)
@@ -576,6 +597,12 @@ pub fn make_stats<E: ExecutionLog>(logs: impl IntoIterator<Item = Arc<E>>, show_
 		"Time to finalization (monitor)".into(),
 		logs.iter(),
 		E::time_to_finalized_monitor,
+		show_graphs,
+	);
+	single_stat(
+		"Time to dropped (monitor)".into(),
+		logs.iter(),
+		E::time_to_mortal_dropped_monitor,
 		show_graphs,
 	);
 

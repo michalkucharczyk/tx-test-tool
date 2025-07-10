@@ -30,9 +30,10 @@ pub enum CliCommand {
 		/// Spawn block monitor for checking if transactions are included in finalized blocks.
 		#[clap(long)]
 		block_monitor: bool,
-		/// Use mortal transactions.
+		/// Use mortal transactions. This represents the number of blocks the mortal tx is valid
+		/// for, starting with the current finalized block at the time of tx creation.
 		#[clap(long)]
-		mortal: Option<u32>,
+		mortal: Option<u64>,
 		/// Send transactions threshold, sends the batch when number of pedning extrinsics drops
 		/// below this number.
 		#[clap(long, default_value_t = 10000)]

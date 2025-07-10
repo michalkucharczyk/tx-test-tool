@@ -19,13 +19,16 @@ use std::{
 };
 use subxt::{
 	backend::rpc::RpcClient,
-	config::transaction_extensions::{
-		ChargeAssetTxPaymentParams, ChargeTransactionPaymentParams, CheckMortalityParams,
-		CheckNonceParams,
+	config::{
+		transaction_extensions::{
+			ChargeAssetTxPaymentParams, ChargeTransactionPaymentParams, CheckMortalityParams,
+			CheckNonceParams,
+		},
+		DefaultExtrinsicParams, ExtrinsicParams,
 	},
 	dynamic::{At, Value},
 	ext::scale_value::value,
-	tx::{DynamicPayload, Signer, SubmittableTransaction},
+	tx::{DynamicPayload, PartialTransaction, Signer, SubmittableTransaction},
 	OnlineClient, PolkadotConfig,
 };
 use subxt_core::{config::SubstrateExtrinsicParamsBuilder, utils::AccountId20};
@@ -33,9 +36,10 @@ use subxt_signer::{
 	eth::{dev as eth_dev, Keypair as EthKeypair, Signature},
 	sr25519::{dev as sr25519_dev, Keypair as SrPair},
 };
-use tracing::{debug, trace};
+use tracing::{debug, error, trace};
 
 const LOG_TARGET: &str = "subxt_tx";
+const DEFAULT_RETRIES_FOR_PARTIAL_TX_CREATION: usize = 10;
 
 #[derive(Clone)]
 /// Ethereum runtime config definition for subxt usage purposes.
@@ -58,9 +62,11 @@ pub(crate) type HashOf<C> = <C as subxt::Config>::Hash;
 pub(crate) type AccountIdOf<C> = <C as subxt::Config>::AccountId;
 
 /// A subxt transaction abstraction.
+#[derive(Clone)]
 pub struct SubxtTransaction<C: subxt::Config> {
-	transaction: SubmittableTransaction<C, OnlineClient<C>>,
+	transaction: Arc<SubmittableTransaction<C, OnlineClient<C>>>,
 	nonce: u128,
+	valid_until: Option<u64>,
 	account_metadata: AccountMetadata,
 }
 
@@ -77,13 +83,13 @@ impl<C: subxt::Config> SubxtTransaction<C> {
 	pub fn new(
 		transaction: SubmittableTransaction<C, OnlineClient<C>>,
 		nonce: u128,
+		valid_until: Option<u64>,
 		account_metadata: AccountMetadata,
 	) -> Self {
-		Self { transaction, nonce, account_metadata }
+		Self { transaction: Arc::new(transaction), nonce, account_metadata, valid_until }
 	}
 }
 
-// todo: shall  be part of TransactionSubxt - to update mortality.
 // type TransactionSubxt2 = subxt::tx::DynamicPayload;
 
 impl<C: subxt::Config> Transaction for SubxtTransaction<C> {
@@ -100,6 +106,9 @@ impl<C: subxt::Config> Transaction for SubxtTransaction<C> {
 	fn account_metadata(&self) -> AccountMetadata {
 		self.account_metadata.clone()
 	}
+	fn valid_until(&self) -> &Option<u64> {
+		&self.valid_until
+	}
 }
 
 #[derive(Clone)]
@@ -110,7 +119,7 @@ pub struct SubxtTransactionsSink<C: subxt::Config, KP: Signer<C>> {
 	nonces: Arc<RwLock<HashMap<String, u128>>>,
 	rpc_client: RpcClient,
 	current_pending_extrinsics: Arc<RwLock<Option<(Instant, usize)>>>,
-	transaction_monitor: Option<BlockMonitor<C>>,
+	block_monitor: Option<BlockMonitor<C>>,
 }
 
 const EXPECT_CONNECT: &str = "should connect to rpc client";
@@ -131,7 +140,7 @@ where
 			nonces: Default::default(),
 			rpc_client: RpcClient::from_url("ws://127.0.0.1:9933").await.expect(EXPECT_CONNECT),
 			current_pending_extrinsics: Arc::new(None.into()),
-			transaction_monitor: None,
+			block_monitor: None,
 		}
 	}
 
@@ -143,7 +152,7 @@ where
 			nonces: Default::default(),
 			rpc_client: RpcClient::from_url(uri).await.expect(EXPECT_CONNECT),
 			current_pending_extrinsics: Arc::new(None.into()),
-			transaction_monitor: None,
+			block_monitor: None,
 		}
 	}
 
@@ -151,7 +160,7 @@ where
 		uri: &str,
 		accounts_description: AccountsDescription,
 		generate_pair: G,
-		transaction_monitor: Option<BlockMonitor<C>>,
+		block_monitor: Option<BlockMonitor<C>>,
 		use_legacy_backend: bool,
 	) -> Self
 	where
@@ -169,7 +178,7 @@ where
 			nonces: Default::default(),
 			rpc_client: crate::helpers::client(uri).await.expect(EXPECT_CONNECT).into(),
 			current_pending_extrinsics: Arc::new(None.into()),
-			transaction_monitor,
+			block_monitor,
 		}
 	}
 
@@ -306,7 +315,7 @@ where
 	}
 
 	fn transaction_monitor(&self) -> Option<&dyn TransactionMonitor<<C as subxt::Config>::Hash>> {
-		self.transaction_monitor
+		self.block_monitor
 			.as_ref()
 			.map(|m| m as &dyn TransactionMonitor<<C as subxt::Config>::Hash>)
 	}
@@ -496,10 +505,117 @@ pub(crate) fn build_eth_tx_payload(
 	}
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn create_online_transaction<C: subxt::Config, KP, G>(
+	from_keypair: &KP,
+	nonce: u128,
+	mortality: &Option<u64>,
+	account: &str,
+	sink: &SubxtTransactionsSink<C, KP>,
+	from_account_id: &<C as subxt::Config>::AccountId,
+	to_account_id: &<C as subxt::Config>::AccountId,
+	recipe: &TransactionRecipe,
+	generate_payload: G,
+) -> Result<SubxtTransaction<C>, Error>
+where
+	G: GenerateTxPayloadFunction<AccountIdOf<C>>,
+	AccountIdOf<C>: Send + Sync + AsRef<[u8]>,
+	KP: Signer<C> + Clone + Send + Sync + 'static,
+	<<C as subxt::Config>::ExtrinsicParams as subxt::config::ExtrinsicParams<C>>::Params: From<(
+		(),
+		(),
+		(),
+		CheckNonceParams,
+		(),
+		CheckMortalityParams<C>,
+		ChargeAssetTxPaymentParams<C>,
+		ChargeTransactionPaymentParams,
+		(),
+	)>,
+{
+	// Needed because `Params` as associated type does not implement clone, and we need to
+	// recreate the tx params in a loop when we can't create a partial tx with the online
+	// client, due to various RPC related issues or state not being up to date (currently we
+	// handle an error which happens when trying to create a partial tx that is based on a
+	// certain finalized block returned by the RPC, which is then reported as not found).
+	// Retrying seems to fix the issue.
+	fn tx_params<CC: subxt::Config>(
+		mortality: &Option<u64>,
+		nonce: u64,
+		recipe: &TransactionRecipe,
+	) -> <DefaultExtrinsicParams<CC> as ExtrinsicParams<CC>>::Params {
+		let mut params = <SubstrateExtrinsicParamsBuilder<CC>>::new().nonce(nonce).tip(recipe.tip);
+		if let Some(mortal) = mortality {
+			params = params.mortal(*mortal);
+		}
+		params.build()
+	}
+
+	// Creates a subxt transaction.
+	//
+	// The mortality of the transaction involves setting up a block until the transaction is valid,
+	// which needs fetching the last finalized block number on chain similarly to subxt:
+	// https://github.com/paritytech/subxt/blob/77b6abccbacf194f3889610024e2f4024e8c2822/subxt/src/tx/tx_client.rs#L600
+	async fn subxt_transaction<CC: subxt::Config, KEYP>(
+		sink: &SubxtTransactionsSink<CC, KEYP>,
+		mut partial_tx: PartialTransaction<CC, OnlineClient<CC>>,
+		from_keypair: &KEYP,
+		nonce: u128,
+		mortality: &Option<u64>,
+		account: &str,
+	) -> Result<SubxtTransaction<CC>, Error>
+	where
+		KEYP: Signer<CC> + Clone + Send + Sync + 'static,
+		AccountIdOf<CC>: Send + Sync + AsRef<[u8]>,
+	{
+		let block_number = if mortality.is_some() {
+			let block_ref = sink
+				.api()
+				.backend()
+				.latest_finalized_block_ref()
+				.await
+				.expect("to get the last finalized block ref. qed");
+			let block = sink
+				.api()
+				.blocks()
+				.at(block_ref)
+				.await
+				.expect("to get the corresponding block header. qed");
+			Some(block.number().into())
+		} else {
+			None
+		};
+
+		let submittable_tx = partial_tx.sign(from_keypair);
+		let hash = submittable_tx.hash();
+		debug!(target:LOG_TARGET,"built mortal tx hash: {:?}", hash);
+		Ok(SubxtTransaction::<CC>::new(
+			submittable_tx,
+			nonce,
+			mortality.and_then(|mortal| block_number.map(|number| number + mortal)),
+			sink.get_to_account_metadata(account).expect("account metadata exists"),
+		))
+	}
+
+	let tx_call = generate_payload(to_account_id.clone(), recipe);
+	for _ in 0..DEFAULT_RETRIES_FOR_PARTIAL_TX_CREATION {
+		let params = tx_params(mortality, nonce as u64, recipe);
+		match sink.api().tx().create_partial(&tx_call, from_account_id, params.into()).await {
+			Ok(tx) =>
+				return subxt_transaction(sink, tx, from_keypair, nonce, mortality, account).await,
+			Err(_) => continue,
+		}
+	}
+
+	error!(target: LOG_TARGET, "Attempting transaction creation with the online client, to factor in the provided mortality, failed.");
+	Err(Error::Other("failed to create transaction with online client".to_string()))
+}
+
 /// Builds a transaction with subxt.
 pub(crate) async fn build_subxt_tx<C, KP, G>(
 	account: &str,
 	nonce: &Option<u128>,
+	mortality: &Option<u64>,
 	sink: &SubxtTransactionsSink<C, KP>,
 	recipe: &TransactionRecipe,
 	generate_payload: G,
@@ -539,31 +655,46 @@ where
 		target:LOG_TARGET,
 		account,
 		nonce,
-		from_account=hex::encode(from_account_id),
+		?mortality,
+		from_account=hex::encode(from_account_id.clone()),
 		to_account=hex::encode(to_account_id.clone()),
 		"build_subxt_tx"
 	);
 
-	let tx_params = <SubstrateExtrinsicParamsBuilder<C>>::new()
-		.nonce(nonce as u64)
-		.tip(recipe.tip)
-		.build()
-		.into();
-	let tx_call = generate_payload(to_account_id, recipe);
-
-	let tx = SubxtTransaction::<C>::new(
-		sink.api()
-			.tx()
-			.create_partial_offline(&tx_call, tx_params)
-			.unwrap()
-			.sign(&from_keypair),
-		nonce as u128,
-		sink.get_to_account_metadata(account).expect("account metadata exists"),
-	);
-
-	debug!(target:LOG_TARGET,"built tx hash: {:?}", tx.hash());
-
-	tx
+	if mortality.is_some() {
+		create_online_transaction(
+			&from_keypair,
+			nonce,
+			mortality,
+			account,
+			sink,
+			&from_account_id,
+			&to_account_id,
+			recipe,
+			generate_payload,
+		)
+		.await
+		.expect("failed to create mortal transaction")
+	} else {
+		let params = <SubstrateExtrinsicParamsBuilder<C>>::new()
+			.nonce(nonce as u64)
+			.tip(recipe.tip)
+			.build()
+			.into();
+		let tx_call = generate_payload(to_account_id, recipe);
+		let tx = SubxtTransaction::<C>::new(
+			sink.api()
+				.tx()
+				.create_partial_offline(&tx_call, params)
+				.unwrap()
+				.sign(&from_keypair),
+			nonce as u128,
+			None,
+			sink.get_to_account_metadata(account).expect("account metadata exists"),
+		);
+		debug!(target:LOG_TARGET,"built immortal tx hash: {:?}", tx.hash());
+		tx
+	}
 }
 
 #[cfg(test)]

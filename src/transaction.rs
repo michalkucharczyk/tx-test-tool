@@ -30,6 +30,7 @@ pub(crate) trait TransactionBuilder {
 		&self,
 		account: &'a str,
 		nonce: &Option<u128>,
+		mortality: &Option<u64>,
 		sink: &Self::Sink,
 		watched: bool,
 		recipe: &TransactionRecipe,
@@ -49,17 +50,20 @@ impl TransactionBuilder for SubstrateTransactionBuilder {
 		&self,
 		account: &'a str,
 		nonce: &Option<u128>,
+		mortality: &Option<u64>,
 		sink: &Self::Sink,
 		watched: bool,
 		recipe: &TransactionRecipe,
 	) -> DefaultTxTask<Self::Transaction> {
 		if !watched {
 			DefaultTxTask::<Self::Transaction>::new_unwatched(
-				build_subxt_tx(account, nonce, sink, recipe, build_substrate_tx_payload).await,
+				build_subxt_tx(account, nonce, mortality, sink, recipe, build_substrate_tx_payload)
+					.await,
 			)
 		} else {
 			DefaultTxTask::<Self::Transaction>::new_watched(
-				build_subxt_tx(account, nonce, sink, recipe, build_substrate_tx_payload).await,
+				build_subxt_tx(account, nonce, mortality, sink, recipe, build_substrate_tx_payload)
+					.await,
 			)
 		}
 	}
@@ -78,17 +82,18 @@ impl TransactionBuilder for EthTransactionBuilder {
 		&self,
 		account: &'a str,
 		nonce: &Option<u128>,
+		mortality: &Option<u64>,
 		sink: &Self::Sink,
 		watched: bool,
 		recipe: &TransactionRecipe,
 	) -> DefaultTxTask<Self::Transaction> {
 		if !watched {
 			DefaultTxTask::<Self::Transaction>::new_unwatched(
-				build_subxt_tx(account, nonce, sink, recipe, build_eth_tx_payload).await,
+				build_subxt_tx(account, nonce, mortality, sink, recipe, build_eth_tx_payload).await,
 			)
 		} else {
 			DefaultTxTask::<Self::Transaction>::new_watched(
-				build_subxt_tx(account, nonce, sink, recipe, build_eth_tx_payload).await,
+				build_subxt_tx(account, nonce, mortality, sink, recipe, build_eth_tx_payload).await,
 			)
 		}
 	}
@@ -108,6 +113,7 @@ impl TransactionBuilder for FakeTransactionBuilder {
 		&self,
 		account: &'a str,
 		_nonce: &Option<u128>,
+		_mortality: &Option<u64>,
 		sink: &Self::Sink,
 		unwatched: bool,
 		_recipe: &TransactionRecipe,
@@ -198,7 +204,7 @@ impl<H> TransactionStatus<H> {
 	pub(crate) fn get_letter(&self) -> char {
 		match self {
 			TransactionStatus::Validated => 'V',
-			TransactionStatus::Broadcasted { .. } => 'b',
+			TransactionStatus::Broadcasted => 'b',
 			TransactionStatus::InBlock(..) => 'B',
 			TransactionStatus::Finalized(..) => 'F',
 			TransactionStatus::Error { .. } => 'E',
@@ -246,13 +252,17 @@ pub trait Transaction: Send + Sync {
 	fn hash(&self) -> Self::HashType;
 	fn as_any(&self) -> &dyn Any;
 	fn nonce(&self) -> u128;
+	fn valid_until(&self) -> &Option<u64>;
 	fn account_metadata(&self) -> AccountMetadata;
 }
 
 /// Interface for monitoring transaction state.
 #[async_trait]
 pub trait TransactionMonitor<H: BlockHash> {
-	async fn wait(&self, tx_hash: H) -> H;
+	/// Wait for the transaction to finalize.
+	///
+	/// An optional block number is given to be considered for waiting when needed.
+	async fn wait(&self, tx_hash: H, until: Option<u64>) -> Result<H, Error>;
 }
 
 /// Abstraction for RPC client
