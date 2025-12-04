@@ -9,9 +9,8 @@ use crate::{
 	helpers::StreamOf,
 	runner::DefaultTxTask,
 	subxt_transaction::{
-		build_eth_tx_payload, build_substrate_tx_payload, build_subxt_tx, EthRuntimeConfig,
-		EthTransaction, EthTransactionsSink, HashOf, SubstrateTransaction,
-		SubstrateTransactionsSink,
+		build_subxt_tx, EthPayloadBuilderFn, EthRuntimeConfig, EthTransaction, EthTransactionsSink,
+		HashOf, SubPayloadBuilderFn, SubstrateTransaction, SubstrateTransactionsSink,
 	},
 };
 use async_trait::async_trait;
@@ -25,6 +24,7 @@ pub(crate) trait TransactionBuilder {
 	type HashType: BlockHash;
 	type Transaction: Transaction<HashType = Self::HashType>;
 	type Sink: TransactionsSink<Self::HashType>;
+	type PayloadBuilder: Send + Sync;
 
 	async fn build_transaction<'a>(
 		&self,
@@ -33,7 +33,8 @@ pub(crate) trait TransactionBuilder {
 		mortality: &Option<u64>,
 		sink: &Self::Sink,
 		watched: bool,
-		recipe: &TransactionRecipe,
+		tip: u128,
+		payload_builder: &Self::PayloadBuilder,
 	) -> DefaultTxTask<Self::Transaction>;
 }
 
@@ -46,6 +47,8 @@ impl TransactionBuilder for SubstrateTransactionBuilder {
 	type HashType = HashOf<PolkadotConfig>;
 	type Transaction = SubstrateTransaction;
 	type Sink = SubstrateTransactionsSink;
+	type PayloadBuilder = SubPayloadBuilderFn;
+
 	async fn build_transaction<'a>(
 		&self,
 		account: &'a str,
@@ -53,17 +56,16 @@ impl TransactionBuilder for SubstrateTransactionBuilder {
 		mortality: &Option<u64>,
 		sink: &Self::Sink,
 		watched: bool,
-		recipe: &TransactionRecipe,
+		tip: u128,
+		payload_builder: &Self::PayloadBuilder,
 	) -> DefaultTxTask<Self::Transaction> {
 		if !watched {
 			DefaultTxTask::<Self::Transaction>::new_unwatched(
-				build_subxt_tx(account, nonce, mortality, sink, recipe, build_substrate_tx_payload)
-					.await,
+				build_subxt_tx(account, nonce, mortality, sink, tip, &**payload_builder).await,
 			)
 		} else {
 			DefaultTxTask::<Self::Transaction>::new_watched(
-				build_subxt_tx(account, nonce, mortality, sink, recipe, build_substrate_tx_payload)
-					.await,
+				build_subxt_tx(account, nonce, mortality, sink, tip, &**payload_builder).await,
 			)
 		}
 	}
@@ -78,6 +80,8 @@ impl TransactionBuilder for EthTransactionBuilder {
 	type HashType = HashOf<EthRuntimeConfig>;
 	type Transaction = EthTransaction;
 	type Sink = EthTransactionsSink;
+	type PayloadBuilder = EthPayloadBuilderFn;
+
 	async fn build_transaction<'a>(
 		&self,
 		account: &'a str,
@@ -85,15 +89,16 @@ impl TransactionBuilder for EthTransactionBuilder {
 		mortality: &Option<u64>,
 		sink: &Self::Sink,
 		watched: bool,
-		recipe: &TransactionRecipe,
+		tip: u128,
+		payload_builder: &Self::PayloadBuilder,
 	) -> DefaultTxTask<Self::Transaction> {
 		if !watched {
 			DefaultTxTask::<Self::Transaction>::new_unwatched(
-				build_subxt_tx(account, nonce, mortality, sink, recipe, build_eth_tx_payload).await,
+				build_subxt_tx(account, nonce, mortality, sink, tip, &**payload_builder).await,
 			)
 		} else {
 			DefaultTxTask::<Self::Transaction>::new_watched(
-				build_subxt_tx(account, nonce, mortality, sink, recipe, build_eth_tx_payload).await,
+				build_subxt_tx(account, nonce, mortality, sink, tip, &**payload_builder).await,
 			)
 		}
 	}
@@ -109,6 +114,8 @@ impl TransactionBuilder for FakeTransactionBuilder {
 	type HashType = FakeHash;
 	type Transaction = FakeTransaction;
 	type Sink = FakeTransactionsSink;
+	type PayloadBuilder = ();
+
 	async fn build_transaction<'a>(
 		&self,
 		account: &'a str,
@@ -116,7 +123,8 @@ impl TransactionBuilder for FakeTransactionBuilder {
 		_mortality: &Option<u64>,
 		sink: &Self::Sink,
 		unwatched: bool,
-		_recipe: &TransactionRecipe,
+		_tip: u128,
+		_payload_builder: &Self::PayloadBuilder,
 	) -> DefaultTxTask<Self::Transaction> {
 		if unwatched {
 			todo!()
@@ -168,16 +176,15 @@ pub enum TransactionCall {
 /// Type of transaction to execute.
 pub struct TransactionRecipe {
 	pub(crate) call: TransactionCall,
-	pub(crate) tip: u128,
 }
 
 impl TransactionRecipe {
-	pub fn transfer(tip: u128) -> Self {
-		Self { call: TransactionCall::Transfer, tip }
+	pub fn transfer() -> Self {
+		Self { call: TransactionCall::Transfer }
 	}
 
-	pub fn remark(size: u32, tip: u128) -> Self {
-		Self { call: TransactionCall::Remark(size), tip }
+	pub fn remark(size: u32) -> Self {
+		Self { call: TransactionCall::Remark(size) }
 	}
 }
 

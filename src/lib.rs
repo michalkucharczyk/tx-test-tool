@@ -51,6 +51,13 @@ pub mod subxt_api_connector;
 pub mod subxt_transaction;
 pub mod transaction;
 
+// Re-export commonly used types for custom payload builders
+pub use subxt_transaction::{
+	eth_transfer_payload_builder, remark_payload_builder, sub_transfer_payload_builder,
+	EthPayloadBuilderFn, EthTxBuildContext, PayloadBuilderFn, SubPayloadBuilderFn,
+	SubTxBuildContext, TxBuildContext,
+};
+
 /// Initialize the logger for various binaries (e.g. ttxt or test binaries).
 pub fn init_logger() {
 	use std::sync::Once;
