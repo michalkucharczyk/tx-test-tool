@@ -2,11 +2,11 @@
 // This file is dual-licensed as Apache-2.0 or GPL-3.0.
 // see LICENSE for license details.
 
-//! Example: Send `Balances::kill_dev_entry` transactions using a custom payload builder.
+//! Example: Send `TestPallet::kill_dev_entry` transactions using a custom payload builder.
 //!
-//! This example demonstrates how to use `with_custom_sub_payload_builder` to send
-//! custom transactions. Each account sends one transaction that deletes 5 entries
-//! starting at index `5 * account_id`.
+//! This example demonstrates how to use `with_tx_payload_builder_sub` build a custom spammer tool
+//! using custom transactions. Each account sends one transaction that deletes 5 entries starting at
+//! index `5 * account_id`.
 //!
 //! Usage:
 //! ```bash
