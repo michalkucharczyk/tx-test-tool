@@ -624,8 +624,8 @@ where
 }
 
 /// Builds a transaction with subxt.
-pub(crate) async fn build_subxt_tx<'a, C, KP, B>(
-	params: &crate::transaction::BuildTransactionParams<'a>,
+pub(crate) async fn build_subxt_tx<C, KP, B>(
+	params: &crate::transaction::BuildTransactionParams<'_>,
 	sink: &SubxtTransactionsSink<C, KP>,
 	payload_builder: &B,
 ) -> SubxtTransaction<C>
