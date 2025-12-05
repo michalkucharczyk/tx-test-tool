@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_txs_count(1)
         .with_legacy_backend(true)
         .with_installed_ctrlc_stop_hook(true)
-        .with_custom_sub_payload_builder(|ctx| {
+        .with_tx_payload_builder_sub(|ctx| {
             let x = ctx.account.parse::<u32>().unwrap();
             let start = Value::u128((5 * x) as u128);
             let count = Value::u128(5);

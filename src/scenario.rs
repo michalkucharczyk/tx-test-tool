@@ -331,7 +331,7 @@ impl ScenarioBuilder {
 	/// Set a custom payload builder for Substrate chains.
 	///
 	/// The closure receives a `SubTxBuildContext` with account info, nonce, etc.
-	pub fn with_custom_sub_payload_builder<F>(mut self, f: F) -> Self
+	pub fn with_tx_payload_builder_sub<F>(mut self, f: F) -> Self
 	where
 		F: Fn(&SubTxBuildContext) -> DynamicPayload + Send + Sync + 'static,
 	{
@@ -342,7 +342,7 @@ impl ScenarioBuilder {
 	/// Set a custom payload builder for Ethereum chains.
 	///
 	/// The closure receives an `EthTxBuildContext` with account info, nonce, etc.
-	pub fn with_custom_eth_payload_builder<F>(mut self, f: F) -> Self
+	pub fn with_tx_payload_builder_eth<F>(mut self, f: F) -> Self
 	where
 		F: Fn(&EthTxBuildContext) -> DynamicPayload + Send + Sync + 'static,
 	{
