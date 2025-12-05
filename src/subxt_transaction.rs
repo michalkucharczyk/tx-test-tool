@@ -81,7 +81,7 @@ pub type SubstrateTransactionsSink = SubxtTransactionsSink<PolkadotConfig, SrPai
 
 /// Context for building transaction payloads.
 /// Generic over account type `A` to support both Substrate and Ethereum chains.
-pub struct TxBuildContext<'a, A> {
+pub struct TxPayloadBuildContext<'a, A> {
 	/// The destination account ID.
 	pub to_account_id: &'a A,
 	/// The source account ID (signer).
@@ -93,12 +93,13 @@ pub struct TxBuildContext<'a, A> {
 }
 
 /// Context type alias for Substrate chains.
-pub type SubTxBuildContext<'a> = TxBuildContext<'a, AccountIdOf<PolkadotConfig>>;
+pub type SubTxBuildContext<'a> = TxPayloadBuildContext<'a, AccountIdOf<PolkadotConfig>>;
 /// Context type alias for Ethereum chains.
-pub type EthTxBuildContext<'a> = TxBuildContext<'a, AccountId20>;
+pub type EthTxBuildContext<'a> = TxPayloadBuildContext<'a, AccountId20>;
 
 /// Generic payload builder function type.
-pub type PayloadBuilderFn<A> = Arc<dyn Fn(&TxBuildContext<A>) -> DynamicPayload + Send + Sync>;
+pub type PayloadBuilderFn<A> =
+	Arc<dyn Fn(&TxPayloadBuildContext<A>) -> DynamicPayload + Send + Sync>;
 /// Payload builder type alias for Substrate chains.
 pub type SubPayloadBuilderFn = PayloadBuilderFn<AccountIdOf<PolkadotConfig>>;
 /// Payload builder type alias for Ethereum chains.
@@ -541,7 +542,7 @@ where
 		ChargeTransactionPaymentParams,
 		(),
 	)>,
-	B: Fn(&TxBuildContext<AccountIdOf<C>>) -> DynamicPayload + ?Sized,
+	B: Fn(&TxPayloadBuildContext<AccountIdOf<C>>) -> DynamicPayload + ?Sized,
 {
 	// Needed because `Params` as associated type does not implement clone, and we need to
 	// recreate the tx params in a loop when we can't create a partial tx with the online
@@ -607,7 +608,7 @@ where
 		))
 	}
 
-	let ctx = TxBuildContext { to_account_id, from_account_id, account, nonce };
+	let ctx = TxPayloadBuildContext { to_account_id, from_account_id, account, nonce };
 	let tx_call = payload_builder(&ctx);
 	for _ in 0..DEFAULT_RETRIES_FOR_PARTIAL_TX_CREATION {
 		let params = tx_params(mortality, nonce as u64, tip);
@@ -623,12 +624,9 @@ where
 }
 
 /// Builds a transaction with subxt.
-pub(crate) async fn build_subxt_tx<C, KP, B>(
-	account: &str,
-	nonce: &Option<u128>,
-	mortality: &Option<u64>,
+pub(crate) async fn build_subxt_tx<'a, C, KP, B>(
+	params: &crate::transaction::BuildTransactionParams<'a>,
 	sink: &SubxtTransactionsSink<C, KP>,
-	tip: u128,
 	payload_builder: &B,
 ) -> SubxtTransaction<C>
 where
@@ -646,8 +644,10 @@ where
 		ChargeTransactionPaymentParams,
 		(),
 	)>,
-	B: Fn(&TxBuildContext<AccountIdOf<C>>) -> DynamicPayload + ?Sized,
+	B: Fn(&TxPayloadBuildContext<AccountIdOf<C>>) -> DynamicPayload + ?Sized,
 {
+	let &crate::transaction::BuildTransactionParams { account, nonce, mortality, tip } = params;
+
 	let to_account_id = sink.get_to_account_id(account).expect("to account exists");
 	let from_account_id = sink.get_from_account_id(account).expect("from account exists");
 	let from_keypair = sink.get_from_key_pair(account).expect("from account exists");
@@ -687,12 +687,12 @@ where
 		.await
 		.expect("failed to create mortal transaction")
 	} else {
-		let params = <SubstrateExtrinsicParamsBuilder<C>>::new()
+		let tx_params = <SubstrateExtrinsicParamsBuilder<C>>::new()
 			.nonce(nonce as u64)
 			.tip(tip)
 			.build()
 			.into();
-		let ctx = TxBuildContext {
+		let ctx = TxPayloadBuildContext {
 			to_account_id: &to_account_id,
 			from_account_id: &from_account_id,
 			account,
@@ -702,7 +702,7 @@ where
 		let tx = SubxtTransaction::<C>::new(
 			sink.api()
 				.tx()
-				.create_partial_offline(&tx_call, params)
+				.create_partial_offline(&tx_call, tx_params)
 				.unwrap()
 				.sign(&from_keypair),
 			nonce as u128,

@@ -22,8 +22,8 @@ use crate::{
 		SubstrateTransaction, SubstrateTransactionsSink,
 	},
 	transaction::{
-		EthTransactionBuilder, SubstrateTransactionBuilder, Transaction, TransactionBuilder,
-		TransactionCall, TransactionRecipe, TransactionsSink,
+		BuildTransactionParams, EthTransactionBuilder, SubstrateTransactionBuilder, Transaction,
+		TransactionBuilder, TransactionCall, TransactionRecipe, TransactionsSink,
 	},
 };
 use subxt::tx::DynamicPayload;
@@ -515,12 +515,14 @@ impl ScenarioBuilder {
 					txs.push(
 						builder
 							.build_transaction(
-								&build_params.account,
-								&build_params.nonce,
-								&build_params.mortality,
-								&sink,
 								watched_txs,
-								tip,
+								BuildTransactionParams {
+									account: &build_params.account,
+									nonce: &build_params.nonce,
+									mortality: &build_params.mortality,
+									tip,
+								},
+								&sink,
 								&*payload_builder,
 							)
 							.await,

@@ -55,7 +55,7 @@ pub mod transaction;
 pub use subxt_transaction::{
 	eth_transfer_payload_builder, remark_payload_builder, sub_transfer_payload_builder,
 	EthPayloadBuilderFn, EthTxBuildContext, PayloadBuilderFn, SubPayloadBuilderFn,
-	SubTxBuildContext, TxBuildContext,
+	SubTxBuildContext, TxPayloadBuildContext,
 };
 
 /// Initialize the logger for various binaries (e.g. ttxt or test binaries).
