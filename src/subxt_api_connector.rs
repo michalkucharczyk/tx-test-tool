@@ -49,7 +49,7 @@ pub(crate) async fn connect<C: subxt::Config>(
 		};
 	}
 
-	let err = format!("Failed to connect to {} after {} attempts", url, MAX_ATTEMPTS);
-	info!("{}", err);
+	let err = format!("Failed to connect to {url} after {MAX_ATTEMPTS} attempts");
+	info!("{err}");
 	Err(err.into())
 }

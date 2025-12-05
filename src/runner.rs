@@ -330,15 +330,15 @@ where
 		let default_file_name = self
 			.executor_id
 			.as_ref()
-			.map(|id| format!("ttxt_{}_{}.json", id, formatted_date))
-			.unwrap_or(format!("ttxt_{}.json", formatted_date));
+			.map(|id| format!("ttxt_{id}_{formatted_date}.json"))
+			.unwrap_or(format!("ttxt_{formatted_date}.json"));
 		self.base_dir_path
 			.as_ref()
 			.map(|basedir| {
 				let filename = self
 					.log_file_name
 					.as_ref()
-					.map(|filename| format!("{basedir}/{filename}_{}", formatted_date))
+					.map(|filename| format!("{basedir}/{filename}_{formatted_date}"))
 					.unwrap_or(format!("{basedir}/{default_file_name}"));
 				filename
 			})
