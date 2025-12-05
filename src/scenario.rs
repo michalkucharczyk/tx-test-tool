@@ -17,9 +17,9 @@ use crate::{
 	runner::{DefaultTxTask, Runner, TxTask},
 	subxt_transaction::{
 		eth_transfer_payload_builder, generate_ecdsa_keypair, generate_sr25519_keypair,
-		remark_payload_builder, sub_transfer_payload_builder, EthPayloadBuilderFn,
-		EthTransaction, EthTransactionsSink, EthTxBuildContext, SubPayloadBuilderFn,
-		SubstrateTransaction, SubstrateTransactionsSink, SubTxBuildContext,
+		remark_payload_builder, sub_transfer_payload_builder, EthPayloadBuilderFn, EthTransaction,
+		EthTransactionsSink, EthTxBuildContext, SubPayloadBuilderFn, SubTxBuildContext,
+		SubstrateTransaction, SubstrateTransactionsSink,
 	},
 	transaction::{
 		EthTransactionBuilder, SubstrateTransactionBuilder, Transaction, TransactionBuilder,
@@ -590,9 +590,8 @@ impl ScenarioBuilder {
 						self.use_legacy_backend,
 					);
 				let sink = new_with_uri_with_accounts_description.await;
-				let txs = self
-					.build_transactions(builder, sink.clone(), tip, payload_builder)
-					.await;
+				let txs =
+					self.build_transactions(builder, sink.clone(), tip, payload_builder).await;
 				let (stop_sender, runner) =
 					Runner::<DefaultTxTask<EthTransaction>, EthTransactionsSink>::new(
 						send_threshold,
@@ -627,9 +626,8 @@ impl ScenarioBuilder {
 					self.use_legacy_backend,
 				)
 				.await;
-				let txs = self
-					.build_transactions(builder, sink.clone(), tip, payload_builder)
-					.await;
+				let txs =
+					self.build_transactions(builder, sink.clone(), tip, payload_builder).await;
 				let (stop_sender, runner) =
 					Runner::<DefaultTxTask<SubstrateTransaction>, SubstrateTransactionsSink>::new(
 						send_threshold,
