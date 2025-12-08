@@ -16,14 +16,17 @@ use crate::{
 	execution_log::TransactionExecutionLog,
 	runner::{DefaultTxTask, Runner, TxTask},
 	subxt_transaction::{
-		generate_ecdsa_keypair, generate_sr25519_keypair, EthTransaction, EthTransactionsSink,
+		eth_transfer_payload_builder, generate_ecdsa_keypair, generate_sr25519_keypair,
+		remark_payload_builder, sub_transfer_payload_builder, EthPayloadBuilderFn, EthTransaction,
+		EthTransactionsSink, EthTxBuildContext, SubPayloadBuilderFn, SubTxBuildContext,
 		SubstrateTransaction, SubstrateTransactionsSink,
 	},
 	transaction::{
-		EthTransactionBuilder, SubstrateTransactionBuilder, Transaction, TransactionBuilder,
-		TransactionRecipe, TransactionsSink,
+		BuildTransactionParams, EthTransactionBuilder, SubstrateTransactionBuilder, Transaction,
+		TransactionBuilder, TransactionCall, TransactionRecipe, TransactionsSink,
 	},
 };
+use subxt::tx::DynamicPayload;
 
 #[derive(Clone, Debug)]
 /// Holds information relevant for transaction generation.
@@ -163,6 +166,46 @@ impl ScenarioExecutor {
 	}
 }
 
+/// Source of the transaction payload builder.
+enum TxPayloadBuilderSource {
+	/// Recipe to be resolved to a builder in `build()` based on chain_type.
+	Recipe(TransactionRecipe),
+	/// Custom Substrate payload builder.
+	SubCustom(SubPayloadBuilderFn),
+	/// Custom Ethereum payload builder.
+	EthCustom(EthPayloadBuilderFn),
+}
+
+impl TxPayloadBuilderSource {
+	/// Resolve the source into a Substrate payload builder.
+	fn into_sub_builder(self) -> SubPayloadBuilderFn {
+		match self {
+			Self::SubCustom(f) => f,
+			Self::Recipe(recipe) => match recipe.call {
+				TransactionCall::Remark(size_kb) => remark_payload_builder(size_kb),
+				TransactionCall::Transfer => sub_transfer_payload_builder(),
+			},
+			Self::EthCustom(_) => {
+				panic!("EthCustom payload builder cannot be used with ChainType::Sub")
+			},
+		}
+	}
+
+	/// Resolve the source into an Ethereum payload builder.
+	fn into_eth_builder(self) -> EthPayloadBuilderFn {
+		match self {
+			Self::EthCustom(f) => f,
+			Self::Recipe(recipe) => match recipe.call {
+				TransactionCall::Remark(size_kb) => remark_payload_builder(size_kb),
+				TransactionCall::Transfer => eth_transfer_payload_builder(),
+			},
+			Self::SubCustom(_) => {
+				panic!("SubCustom payload builder cannot be used with ChainType::Eth")
+			},
+		}
+	}
+}
+
 /// Building logic for the execution of a scenario.
 pub struct ScenarioBuilder {
 	account_id: Option<String>,
@@ -170,7 +213,7 @@ pub struct ScenarioBuilder {
 	last_id: Option<u32>,
 	nonce_from: Option<u128>,
 	txs_count: u32,
-	tx_recipe: Option<TransactionRecipe>,
+	tx_payload_builder_source: Option<TxPayloadBuilderSource>,
 	mortality: Option<u64>,
 	does_block_monitoring: bool,
 	watched_txs: bool,
@@ -194,7 +237,7 @@ impl Default for ScenarioBuilder {
 
 impl ScenarioBuilder {
 	/// A default initializer of the builder, with a few defaults:
-	/// - `tx_recipe` is set to [`crate::transaction::TransactionCall::Transfer`]
+	/// - `tx_payload_builder_source` is set to transfer recipe.
 	/// - `does_block_monitoring` is set to `false`.
 	/// - `installs_ctrl_c_stop_hook` is set to `false`.
 	/// - `send_threshold` is set to `1000`.
@@ -205,7 +248,9 @@ impl ScenarioBuilder {
 			last_id: None,
 			nonce_from: None,
 			txs_count: 1,
-			tx_recipe: Some(TransactionRecipe::transfer(0)),
+			tx_payload_builder_source: Some(TxPayloadBuilderSource::Recipe(
+				TransactionRecipe::transfer(),
+			)),
 			does_block_monitoring: false,
 			mortality: None,
 			watched_txs: false,
@@ -269,27 +314,44 @@ impl ScenarioBuilder {
 
 	/// Sets transaction recipe to a regular balances transfer.
 	///
-	/// The builder is already initialised with a transfer transaction recipe with a tip of 0.
-	/// If a tip is set, the builder will update the tip of the transaction recipe accordingly.
+	/// The builder is already initialised with a transfer transaction recipe.
 	pub fn with_transfer_recipe(mut self) -> Self {
-		self.tx_recipe = Some(TransactionRecipe::transfer(self.tip));
+		self.tx_payload_builder_source =
+			Some(TxPayloadBuilderSource::Recipe(TransactionRecipe::transfer()));
 		self
 	}
 
 	/// Set a remark transaction recipe.
-	///
-	/// If a tip is set, the builder will update the tip of the transaction recipe
-	/// accordingly.
 	pub fn with_remark_recipe(mut self, remark: u32) -> Self {
-		self.tx_recipe = Some(TransactionRecipe::remark(remark, self.tip));
+		self.tx_payload_builder_source =
+			Some(TxPayloadBuilderSource::Recipe(TransactionRecipe::remark(remark)));
+		self
+	}
+
+	/// Set a custom payload builder for Substrate chains.
+	///
+	/// The closure receives a `SubTxBuildContext` with account info, nonce, etc.
+	pub fn with_tx_payload_builder_sub<F>(mut self, f: F) -> Self
+	where
+		F: Fn(&SubTxBuildContext) -> DynamicPayload + Send + Sync + 'static,
+	{
+		self.tx_payload_builder_source = Some(TxPayloadBuilderSource::SubCustom(Arc::new(f)));
+		self
+	}
+
+	/// Set a custom payload builder for Ethereum chains.
+	///
+	/// The closure receives an `EthTxBuildContext` with account info, nonce, etc.
+	pub fn with_tx_payload_builder_eth<F>(mut self, f: F) -> Self
+	where
+		F: Fn(&EthTxBuildContext) -> DynamicPayload + Send + Sync + 'static,
+	{
+		self.tx_payload_builder_source = Some(TxPayloadBuilderSource::EthCustom(Arc::new(f)));
 		self
 	}
 
 	/// Allows to specify transaction tip. This indirectly controls priority of transaction.
 	pub fn with_tip(mut self, tip: u128) -> Self {
-		if let Some(r) = self.tx_recipe.as_mut() {
-			r.tip = tip
-		};
 		self.tip = tip;
 		self
 	}
@@ -384,12 +446,19 @@ impl ScenarioBuilder {
 	}
 
 	/// Returns a set of tasks that handle transaction execution.
-	async fn build_transactions<H, T, S, B>(&self, builder: B, sink: S) -> Vec<DefaultTxTask<T>>
+	async fn build_transactions<H, T, S, B>(
+		&self,
+		builder: B,
+		sink: S,
+		tip: u128,
+		payload_builder: B::PayloadBuilder,
+	) -> Vec<DefaultTxTask<T>>
 	where
 		H: BlockHash + 'static,
 		T: Transaction<HashType = H> + Send + 'static,
 		S: TransactionsSink<H> + 'static + Clone,
 		B: TransactionBuilder<HashType = H, Transaction = T, Sink = S> + Send + Sync + 'static,
+		B::PayloadBuilder: Clone,
 	{
 		let mut tx_build_params = vec![];
 		if let Some(start_id) = self.start_id {
@@ -429,6 +498,7 @@ impl ScenarioBuilder {
 
 		let tx_build_params = Arc::<Vec<TransactionBuildParams>>::from(tx_build_params);
 		let builder = Arc::new(builder);
+		let payload_builder = Arc::new(payload_builder);
 		let mut threads = Vec::new();
 
 		(0..t).for_each(|thread_idx| {
@@ -436,10 +506,7 @@ impl ScenarioBuilder {
 			let tx_build_params = tx_build_params.clone();
 			let builder = builder.clone();
 			let sink = sink.clone();
-			let recipe = self
-				.tx_recipe
-				.clone()
-				.expect("to be configured with a transaction recipe. qed.");
+			let payload_builder = payload_builder.clone();
 			let watched_txs = self.watched_txs;
 			threads.push(tokio::task::spawn(async move {
 				let mut txs = vec![];
@@ -448,12 +515,15 @@ impl ScenarioBuilder {
 					txs.push(
 						builder
 							.build_transaction(
-								&build_params.account,
-								&build_params.nonce,
-								&build_params.mortality,
-								&sink,
 								watched_txs,
-								&recipe,
+								BuildTransactionParams {
+									account: &build_params.account,
+									nonce: &build_params.nonce,
+									mortality: &build_params.mortality,
+									tip,
+								},
+								&sink,
+								&*payload_builder,
 							)
 							.await,
 					);
@@ -473,7 +543,7 @@ impl ScenarioBuilder {
 	}
 
 	/// Returns a runner of transactions for the configured scenario.
-	pub async fn build(self) -> ScenarioExecutor {
+	pub async fn build(mut self) -> ScenarioExecutor {
 		let does_block_monitoring = self.does_block_monitoring;
 		let send_threshold =
 			self.send_threshold.expect("to have configured the send threshold. qed.");
@@ -498,8 +568,16 @@ impl ScenarioBuilder {
 		};
 
 		let installs_ctrlc_stop_hook = self.installs_ctrl_c_stop_hook;
+		let tip = self.tip;
+
 		match chain_type {
 			ChainType::Eth => {
+				let payload_builder = self
+					.tx_payload_builder_source
+					.take()
+					.expect("No payload source configured")
+					.into_eth_builder();
+
 				let builder = EthTransactionBuilder::default();
 				let new_with_uri_with_accounts_description =
 					EthTransactionsSink::new_with_uri_with_accounts_description(
@@ -514,7 +592,8 @@ impl ScenarioBuilder {
 						self.use_legacy_backend,
 					);
 				let sink = new_with_uri_with_accounts_description.await;
-				let txs = self.build_transactions(builder, sink.clone()).await;
+				let txs =
+					self.build_transactions(builder, sink.clone(), tip, payload_builder).await;
 				let (stop_sender, runner) =
 					Runner::<DefaultTxTask<EthTransaction>, EthTransactionsSink>::new(
 						send_threshold,
@@ -530,6 +609,12 @@ impl ScenarioBuilder {
 				executor
 			},
 			ChainType::Sub => {
+				let payload_builder = self
+					.tx_payload_builder_source
+					.take()
+					.expect("No payload source configured")
+					.into_sub_builder();
+
 				let builder = SubstrateTransactionBuilder::default();
 				let sink = SubstrateTransactionsSink::new_with_uri_with_accounts_description(
 					rpc_uri.as_str(),
@@ -543,7 +628,8 @@ impl ScenarioBuilder {
 					self.use_legacy_backend,
 				)
 				.await;
-				let txs = self.build_transactions(builder, sink.clone()).await;
+				let txs =
+					self.build_transactions(builder, sink.clone(), tip, payload_builder).await;
 				let (stop_sender, runner) =
 					Runner::<DefaultTxTask<SubstrateTransaction>, SubstrateTransactionsSink>::new(
 						send_threshold,
@@ -583,7 +669,7 @@ mod tests {
 		let sink = FakeTransactionsSink::default();
 		let builder = FakeTransactionBuilder;
 		let scenario_builder = ScenarioBuilder::new().with_start_id(0).with_nonce_from(Some(0));
-		let tasks = scenario_builder.build_transactions(builder, sink).await;
+		let tasks = scenario_builder.build_transactions(builder, sink, 0, ()).await;
 		assert_eq!(tasks.len(), 1);
 		assert_eq!(tasks[0].tx().nonce(), 0);
 		assert_eq!(tasks[0].tx().account_metadata(), AccountMetadata::Derived(0));
@@ -594,7 +680,7 @@ mod tests {
 		let scenario_builder = ScenarioBuilder::new()
 			.with_account_id("alice".to_string())
 			.with_nonce_from(Some(0));
-		let tasks = scenario_builder.build_transactions(builder, sink).await;
+		let tasks = scenario_builder.build_transactions(builder, sink, 0, ()).await;
 		assert_eq!(tasks.len(), 1);
 		assert_eq!(tasks[0].tx().nonce(), 0);
 		assert_eq!(tasks[0].tx().account_metadata(), AccountMetadata::KeyRing("alice".to_string()));
@@ -606,7 +692,7 @@ mod tests {
 			.with_start_id(1)
 			.with_nonce_from(Some(0))
 			.with_txs_count(10);
-		let tasks = scenario_builder.build_transactions(builder, sink).await;
+		let tasks = scenario_builder.build_transactions(builder, sink, 0, ()).await;
 		assert_eq!(tasks.len(), 10);
 		for (i, task) in tasks.iter().enumerate() {
 			assert_eq!(task.tx().nonce(), i as u128);
@@ -620,7 +706,7 @@ mod tests {
 			.with_account_id("alice".to_string())
 			.with_nonce_from(Some(0))
 			.with_txs_count(10);
-		let tasks = scenario_builder.build_transactions(builder, sink).await;
+		let tasks = scenario_builder.build_transactions(builder, sink, 0, ()).await;
 		assert_eq!(tasks.len(), 10);
 		for (i, task) in tasks.iter().enumerate() {
 			assert_eq!(task.tx().nonce(), i as u128);
@@ -635,7 +721,7 @@ mod tests {
 			.with_last_id(10)
 			.with_nonce_from(Some(0))
 			.with_txs_count(10);
-		let tasks = scenario_builder.build_transactions(builder, sink).await;
+		let tasks = scenario_builder.build_transactions(builder, sink, 0, ()).await;
 		assert_eq!(tasks.len(), 60);
 		for (i, task) in tasks.iter().enumerate() {
 			assert_eq!(task.tx().nonce(), i as u128 / 6);

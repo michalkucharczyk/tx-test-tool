@@ -717,7 +717,7 @@ pub mod journal {
 
 			writeln!(file, "hash,{}", CsvEntry::<T>::header_line()).unwrap();
 			for (h, v) in raw_data {
-				writeln!(file, "{:?},{}", h, v).unwrap();
+				writeln!(file, "{h:?},{v}").unwrap();
 			}
 		}
 	}

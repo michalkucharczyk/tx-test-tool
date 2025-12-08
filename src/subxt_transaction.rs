@@ -4,8 +4,7 @@ use crate::{
 	helpers::StreamOf,
 	scenario::AccountsDescription,
 	transaction::{
-		AccountMetadata, Transaction, TransactionCall, TransactionMonitor, TransactionRecipe,
-		TransactionStatus, TransactionsSink,
+		AccountMetadata, Transaction, TransactionMonitor, TransactionStatus, TransactionsSink,
 	},
 };
 use async_trait::async_trait;
@@ -17,6 +16,7 @@ use std::{
 	sync::Arc,
 	time::{Duration, Instant},
 };
+pub use subxt::dynamic;
 use subxt::{
 	backend::rpc::RpcClient,
 	config::{
@@ -78,6 +78,74 @@ pub type EthTransactionsSink = SubxtTransactionsSink<EthRuntimeConfig, EthKeypai
 pub type SubstrateTransaction = SubxtTransaction<PolkadotConfig>;
 /// Holds the RPC API connection for transaction execution.
 pub type SubstrateTransactionsSink = SubxtTransactionsSink<PolkadotConfig, SrPair>;
+
+/// Context for building transaction payloads.
+/// Generic over account type `A` to support both Substrate and Ethereum chains.
+pub struct TxPayloadBuildContext<'a, A> {
+	/// The destination account ID.
+	pub to_account_id: &'a A,
+	/// The source account ID (signer).
+	pub from_account_id: &'a A,
+	/// Account string identifier (e.g. "0", "alice").
+	pub account: &'a str,
+	/// Transaction nonce.
+	pub nonce: u128,
+}
+
+/// Context type alias for Substrate chains.
+pub type SubTxBuildContext<'a> = TxPayloadBuildContext<'a, AccountIdOf<PolkadotConfig>>;
+/// Context type alias for Ethereum chains.
+pub type EthTxBuildContext<'a> = TxPayloadBuildContext<'a, AccountId20>;
+
+/// Generic payload builder function type.
+pub type PayloadBuilderFn<A> =
+	Arc<dyn Fn(&TxPayloadBuildContext<A>) -> DynamicPayload + Send + Sync>;
+/// Payload builder type alias for Substrate chains.
+pub type SubPayloadBuilderFn = PayloadBuilderFn<AccountIdOf<PolkadotConfig>>;
+/// Payload builder type alias for Ethereum chains.
+pub type EthPayloadBuilderFn = PayloadBuilderFn<AccountId20>;
+
+/// Creates a generic remark payload builder.
+/// Works for any account type that implements `AsRef<[u8]>`.
+/// Size is specified in kilobytes.
+pub fn remark_payload_builder<A>(size_kb: u32) -> PayloadBuilderFn<A>
+where
+	A: AsRef<[u8]> + Send + Sync + 'static,
+{
+	Arc::new(move |ctx| {
+		let i = hex::encode(ctx.to_account_id.as_ref()).as_bytes().last().copied().unwrap();
+		let data = vec![i; size_kb as usize * 1024];
+		subxt::dynamic::tx("System", "remark", vec![data])
+	})
+}
+
+/// Creates a transfer payload builder for Substrate chains.
+pub fn sub_transfer_payload_builder() -> SubPayloadBuilderFn {
+	Arc::new(|ctx| {
+		subxt::dynamic::tx(
+			"Balances",
+			"transfer_keep_alive",
+			vec![
+				value!(Id(Value::from_bytes(ctx.to_account_id.clone()))),
+				Value::u128(1u32.into()),
+			],
+		)
+	})
+}
+
+/// Creates a transfer payload builder for Ethereum chains.
+pub fn eth_transfer_payload_builder() -> EthPayloadBuilderFn {
+	Arc::new(|ctx| {
+		subxt::dynamic::tx(
+			"Balances",
+			"transfer_keep_alive",
+			vec![
+				Value::unnamed_composite(vec![Value::from_bytes(*ctx.to_account_id)]),
+				Value::u128(1u32.into()),
+			],
+		)
+	})
+}
 
 impl<C: subxt::Config> SubxtTransaction<C> {
 	pub fn new(
@@ -448,65 +516,8 @@ where
 	}
 }
 
-pub trait GenerateTxPayloadFunction<A: Send + Sync + AsRef<[u8]>>:
-	Fn(A, &TransactionRecipe) -> DynamicPayload + Copy + Send + 'static
-{
-}
-
-impl<T, A: Send + Sync + AsRef<[u8]>> GenerateTxPayloadFunction<A> for T where
-	T: Fn(A, &TransactionRecipe) -> DynamicPayload + Copy + Send + 'static
-{
-}
-
-/// Generates a transaction payload given a signer account and a transaction recipe.
-pub(crate) fn build_substrate_tx_payload(
-	to_account_id: AccountIdOf<PolkadotConfig>,
-	recipe: &TransactionRecipe,
-) -> DynamicPayload {
-	trace!(target:LOG_TARGET,to_account=hex::encode(to_account_id.clone()),"build_payload (sub)" );
-
-	match recipe.call {
-		TransactionCall::Remark(s) => {
-			let i = hex::encode(to_account_id.clone()).as_bytes().last().copied().unwrap();
-			let data = vec![i; s as usize * 1024];
-			subxt::dynamic::tx("System", "remark", vec![data])
-		},
-		TransactionCall::Transfer => {
-			//works for rococo:
-			subxt::dynamic::tx(
-				"Balances",
-				"transfer_keep_alive",
-				vec![value!(Id(Value::from_bytes(to_account_id))), Value::u128(1u32.into())],
-			)
-		},
-	}
-}
-
-/// Crates a raw eth transaction.
-pub(crate) fn build_eth_tx_payload(
-	to_account_id: AccountId20,
-	recipe: &TransactionRecipe,
-) -> DynamicPayload {
-	trace!(target:LOG_TARGET,to_account=hex::encode(to_account_id),"build_payload (eth)");
-	match recipe.call {
-		TransactionCall::Remark(s) => {
-			let i = hex::encode(to_account_id).as_bytes().last().copied().unwrap();
-			let data = vec![i; s as usize];
-			subxt::dynamic::tx("System", "remark", vec![data])
-		},
-		TransactionCall::Transfer => subxt::dynamic::tx(
-			"Balances",
-			"transfer_keep_alive",
-			vec![
-				Value::unnamed_composite(vec![Value::from_bytes(to_account_id)]),
-				Value::u128(1u32.into()),
-			],
-		),
-	}
-}
-
 #[allow(clippy::too_many_arguments)]
-async fn create_online_transaction<C: subxt::Config, KP, G>(
+async fn create_online_transaction<C: subxt::Config, KP, B>(
 	from_keypair: &KP,
 	nonce: u128,
 	mortality: &Option<u64>,
@@ -514,11 +525,10 @@ async fn create_online_transaction<C: subxt::Config, KP, G>(
 	sink: &SubxtTransactionsSink<C, KP>,
 	from_account_id: &<C as subxt::Config>::AccountId,
 	to_account_id: &<C as subxt::Config>::AccountId,
-	recipe: &TransactionRecipe,
-	generate_payload: G,
+	tip: u128,
+	payload_builder: &B,
 ) -> Result<SubxtTransaction<C>, Error>
 where
-	G: GenerateTxPayloadFunction<AccountIdOf<C>>,
 	AccountIdOf<C>: Send + Sync + AsRef<[u8]>,
 	KP: Signer<C> + Clone + Send + Sync + 'static,
 	<<C as subxt::Config>::ExtrinsicParams as subxt::config::ExtrinsicParams<C>>::Params: From<(
@@ -532,6 +542,7 @@ where
 		ChargeTransactionPaymentParams,
 		(),
 	)>,
+	B: Fn(&TxPayloadBuildContext<AccountIdOf<C>>) -> DynamicPayload + ?Sized,
 {
 	// Needed because `Params` as associated type does not implement clone, and we need to
 	// recreate the tx params in a loop when we can't create a partial tx with the online
@@ -542,9 +553,9 @@ where
 	fn tx_params<CC: subxt::Config>(
 		mortality: &Option<u64>,
 		nonce: u64,
-		recipe: &TransactionRecipe,
+		tip: u128,
 	) -> <DefaultExtrinsicParams<CC> as ExtrinsicParams<CC>>::Params {
-		let mut params = <SubstrateExtrinsicParamsBuilder<CC>>::new().nonce(nonce).tip(recipe.tip);
+		let mut params = <SubstrateExtrinsicParamsBuilder<CC>>::new().nonce(nonce).tip(tip);
 		if let Some(mortal) = mortality {
 			params = params.mortal(*mortal);
 		}
@@ -597,9 +608,10 @@ where
 		))
 	}
 
-	let tx_call = generate_payload(to_account_id.clone(), recipe);
+	let ctx = TxPayloadBuildContext { to_account_id, from_account_id, account, nonce };
+	let tx_call = payload_builder(&ctx);
 	for _ in 0..DEFAULT_RETRIES_FOR_PARTIAL_TX_CREATION {
-		let params = tx_params(mortality, nonce as u64, recipe);
+		let params = tx_params(mortality, nonce as u64, tip);
 		match sink.api().tx().create_partial(&tx_call, from_account_id, params.into()).await {
 			Ok(tx) =>
 				return subxt_transaction(sink, tx, from_keypair, nonce, mortality, account).await,
@@ -612,13 +624,10 @@ where
 }
 
 /// Builds a transaction with subxt.
-pub(crate) async fn build_subxt_tx<C, KP, G>(
-	account: &str,
-	nonce: &Option<u128>,
-	mortality: &Option<u64>,
+pub(crate) async fn build_subxt_tx<C, KP, B>(
+	params: &crate::transaction::BuildTransactionParams<'_>,
 	sink: &SubxtTransactionsSink<C, KP>,
-	recipe: &TransactionRecipe,
-	generate_payload: G,
+	payload_builder: &B,
 ) -> SubxtTransaction<C>
 where
 	AccountIdOf<C>: Send + Sync + AsRef<[u8]>,
@@ -635,8 +644,10 @@ where
 		ChargeTransactionPaymentParams,
 		(),
 	)>,
-	G: GenerateTxPayloadFunction<AccountIdOf<C>>,
+	B: Fn(&TxPayloadBuildContext<AccountIdOf<C>>) -> DynamicPayload + ?Sized,
 {
+	let &crate::transaction::BuildTransactionParams { account, nonce, mortality, tip } = params;
+
 	let to_account_id = sink.get_to_account_id(account).expect("to account exists");
 	let from_account_id = sink.get_from_account_id(account).expect("from account exists");
 	let from_keypair = sink.get_from_key_pair(account).expect("from account exists");
@@ -670,22 +681,28 @@ where
 			sink,
 			&from_account_id,
 			&to_account_id,
-			recipe,
-			generate_payload,
+			tip,
+			payload_builder,
 		)
 		.await
 		.expect("failed to create mortal transaction")
 	} else {
-		let params = <SubstrateExtrinsicParamsBuilder<C>>::new()
+		let tx_params = <SubstrateExtrinsicParamsBuilder<C>>::new()
 			.nonce(nonce as u64)
-			.tip(recipe.tip)
+			.tip(tip)
 			.build()
 			.into();
-		let tx_call = generate_payload(to_account_id, recipe);
+		let ctx = TxPayloadBuildContext {
+			to_account_id: &to_account_id,
+			from_account_id: &from_account_id,
+			account,
+			nonce,
+		};
+		let tx_call = payload_builder(&ctx);
 		let tx = SubxtTransaction::<C>::new(
 			sink.api()
 				.tx()
-				.create_partial_offline(&tx_call, params)
+				.create_partial_offline(&tx_call, tx_params)
 				.unwrap()
 				.sign(&from_keypair),
 			nonce as u128,

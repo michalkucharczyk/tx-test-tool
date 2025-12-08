@@ -9,9 +9,8 @@ use crate::{
 	helpers::StreamOf,
 	runner::DefaultTxTask,
 	subxt_transaction::{
-		build_eth_tx_payload, build_substrate_tx_payload, build_subxt_tx, EthRuntimeConfig,
-		EthTransaction, EthTransactionsSink, HashOf, SubstrateTransaction,
-		SubstrateTransactionsSink,
+		build_subxt_tx, EthPayloadBuilderFn, EthRuntimeConfig, EthTransaction, EthTransactionsSink,
+		HashOf, SubPayloadBuilderFn, SubstrateTransaction, SubstrateTransactionsSink,
 	},
 };
 use async_trait::async_trait;
@@ -19,21 +18,28 @@ use serde::{Deserialize, Serialize};
 use std::any::Any;
 use subxt::{config::BlockHash, tx::TxStatus, OnlineClient, PolkadotConfig};
 
+/// Parameters for building a transaction.
+pub(crate) struct BuildTransactionParams<'a> {
+	pub account: &'a str,
+	pub nonce: &'a Option<u128>,
+	pub mortality: &'a Option<u64>,
+	pub tip: u128,
+}
+
 /// Interface for transaction building.
 #[async_trait]
 pub(crate) trait TransactionBuilder {
 	type HashType: BlockHash;
 	type Transaction: Transaction<HashType = Self::HashType>;
 	type Sink: TransactionsSink<Self::HashType>;
+	type PayloadBuilder: Send + Sync;
 
 	async fn build_transaction<'a>(
 		&self,
-		account: &'a str,
-		nonce: &Option<u128>,
-		mortality: &Option<u64>,
-		sink: &Self::Sink,
 		watched: bool,
-		recipe: &TransactionRecipe,
+		params: BuildTransactionParams<'a>,
+		sink: &Self::Sink,
+		payload_builder: &Self::PayloadBuilder,
 	) -> DefaultTxTask<Self::Transaction>;
 }
 
@@ -46,25 +52,20 @@ impl TransactionBuilder for SubstrateTransactionBuilder {
 	type HashType = HashOf<PolkadotConfig>;
 	type Transaction = SubstrateTransaction;
 	type Sink = SubstrateTransactionsSink;
+	type PayloadBuilder = SubPayloadBuilderFn;
+
 	async fn build_transaction<'a>(
 		&self,
-		account: &'a str,
-		nonce: &Option<u128>,
-		mortality: &Option<u64>,
-		sink: &Self::Sink,
 		watched: bool,
-		recipe: &TransactionRecipe,
+		params: BuildTransactionParams<'a>,
+		sink: &Self::Sink,
+		payload_builder: &Self::PayloadBuilder,
 	) -> DefaultTxTask<Self::Transaction> {
-		if !watched {
-			DefaultTxTask::<Self::Transaction>::new_unwatched(
-				build_subxt_tx(account, nonce, mortality, sink, recipe, build_substrate_tx_payload)
-					.await,
-			)
+		let tx = build_subxt_tx(&params, sink, &**payload_builder).await;
+		if watched {
+			DefaultTxTask::<Self::Transaction>::new_watched(tx)
 		} else {
-			DefaultTxTask::<Self::Transaction>::new_watched(
-				build_subxt_tx(account, nonce, mortality, sink, recipe, build_substrate_tx_payload)
-					.await,
-			)
+			DefaultTxTask::<Self::Transaction>::new_unwatched(tx)
 		}
 	}
 }
@@ -78,23 +79,20 @@ impl TransactionBuilder for EthTransactionBuilder {
 	type HashType = HashOf<EthRuntimeConfig>;
 	type Transaction = EthTransaction;
 	type Sink = EthTransactionsSink;
+	type PayloadBuilder = EthPayloadBuilderFn;
+
 	async fn build_transaction<'a>(
 		&self,
-		account: &'a str,
-		nonce: &Option<u128>,
-		mortality: &Option<u64>,
-		sink: &Self::Sink,
 		watched: bool,
-		recipe: &TransactionRecipe,
+		params: BuildTransactionParams<'a>,
+		sink: &Self::Sink,
+		payload_builder: &Self::PayloadBuilder,
 	) -> DefaultTxTask<Self::Transaction> {
-		if !watched {
-			DefaultTxTask::<Self::Transaction>::new_unwatched(
-				build_subxt_tx(account, nonce, mortality, sink, recipe, build_eth_tx_payload).await,
-			)
+		let tx = build_subxt_tx(&params, sink, &**payload_builder).await;
+		if watched {
+			DefaultTxTask::<Self::Transaction>::new_watched(tx)
 		} else {
-			DefaultTxTask::<Self::Transaction>::new_watched(
-				build_subxt_tx(account, nonce, mortality, sink, recipe, build_eth_tx_payload).await,
-			)
+			DefaultTxTask::<Self::Transaction>::new_unwatched(tx)
 		}
 	}
 }
@@ -109,27 +107,27 @@ impl TransactionBuilder for FakeTransactionBuilder {
 	type HashType = FakeHash;
 	type Transaction = FakeTransaction;
 	type Sink = FakeTransactionsSink;
+	type PayloadBuilder = ();
+
 	async fn build_transaction<'a>(
 		&self,
-		account: &'a str,
-		_nonce: &Option<u128>,
-		_mortality: &Option<u64>,
+		watched: bool,
+		params: BuildTransactionParams<'a>,
 		sink: &Self::Sink,
-		unwatched: bool,
-		_recipe: &TransactionRecipe,
+		_payload_builder: &Self::PayloadBuilder,
 	) -> DefaultTxTask<Self::Transaction> {
-		if unwatched {
+		if watched {
 			todo!()
 		};
 		let mut nonces = sink.nonces.write();
-		let nonce = if let Some(nonce) = nonces.get_mut(&hex::encode(account)) {
+		let nonce = if let Some(nonce) = nonces.get_mut(&hex::encode(params.account)) {
 			*nonce += 1;
 			*nonce
 		} else {
-			nonces.insert(hex::encode(account), 0);
+			nonces.insert(hex::encode(params.account), 0);
 			0
 		};
-		let id = account.parse::<u32>().ok();
+		let id = params.account.parse::<u32>().ok();
 
 		if let Some(i) = id {
 			DefaultTxTask::<FakeTransaction>::new_watched(FakeTransaction::new_multiple(
@@ -168,16 +166,15 @@ pub enum TransactionCall {
 /// Type of transaction to execute.
 pub struct TransactionRecipe {
 	pub(crate) call: TransactionCall,
-	pub(crate) tip: u128,
 }
 
 impl TransactionRecipe {
-	pub fn transfer(tip: u128) -> Self {
-		Self { call: TransactionCall::Transfer, tip }
+	pub fn transfer() -> Self {
+		Self { call: TransactionCall::Transfer }
 	}
 
-	pub fn remark(size: u32, tip: u128) -> Self {
-		Self { call: TransactionCall::Remark(size), tip }
+	pub fn remark(size: u32) -> Self {
+		Self { call: TransactionCall::Remark(size) }
 	}
 }
 
